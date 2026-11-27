@@ -84,6 +84,8 @@ const EpubReader = forwardRef<ReaderHandle, Props>(function EpubReader(props, re
         if (cancelled) return;
         const r = view.renderer;
         r.setAttribute('flow', propsRef.current.flow);
+        // animate swipe snaps and tap turns instead of jumping a whole page at once
+        r.setAttribute('animated', '');
         r.setAttribute('margin', '44px');
         r.setAttribute('gap', '7%');
         r.setAttribute('max-inline-size', '680px');

@@ -22,6 +22,7 @@ type View =
 
 const ANIM_MS = 260;
 const SWIPE_CLOSE_PX = 90;
+const FLICK_MS = 160; // how far a release "throws" the sheet, in ms of current velocity
 
 /**
  * Side-sheet in landscape (book stays visible on the left), bottom-sheet in portrait.
@@ -34,12 +35,17 @@ export default function LookupDrawer({ request, orientation, onClose }: Props) {
   const [shown, setShown] = useState(false);
   const [input, setInput] = useState('');
   const [stack, setStack] = useState<View[]>([]);
-  const [drag, setDrag] = useState(0);
+  const [detent, setDetent] = useState<'half' | 'full'>('half');
   const runId = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const dragStart = useRef<{ x: number; y: number } | null>(null);
+  const sheetRef = useRef<HTMLElement>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
 
   const landscape = orientation === 'landscape';
+  const detentRef = useRef(detent);
+  detentRef.current = detent;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const current = stack[stack.length - 1];
 
   // mount → next frame slide in; close → slide out → unmount
@@ -53,6 +59,7 @@ export default function LookupDrawer({ request, orientation, onClose }: Props) {
     const t = window.setTimeout(() => {
       setMounted(false);
       setStack([]);
+      setDetent('half');
     }, ANIM_MS);
     return () => window.clearTimeout(t);
   }, [open]);
@@ -92,28 +99,100 @@ export default function LookupDrawer({ request, orientation, onClose }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
+  // ---- drag: portrait = up to full screen / down to half / down to close; landscape = swipe right to close
+  useEffect(() => {
+    const sheet = sheetRef.current;
+    const header = headerRef.current;
+    const content = scrollRef.current;
+    if (!mounted || !sheet || !header || !content) return;
+
+    let start: { x: number; y: number; t: number; base: number; fromHeader: boolean } | null = null;
+    let dragging = false;
+    let last = { y: 0, t: 0, v: 0 };
+
+    const halfOffset = () => Math.max(0, sheet.offsetHeight - window.innerHeight * 0.5);
+    const currentBase = () => (landscape ? 0 : detentRef.current === 'full' ? 0 : halfOffset());
+
+    const onStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      const t = e.touches[0];
+      start = { x: t.clientX, y: t.clientY, t: e.timeStamp, base: currentBase(), fromHeader: header.contains(e.target as Node) };
+      dragging = false;
+      last = { y: landscape ? t.clientX : t.clientY, t: e.timeStamp, v: 0 };
+    };
+    const onMove = (e: TouchEvent) => {
+      if (!start) return;
+      const t = e.touches[0];
+      const d = landscape ? t.clientX - start.x : t.clientY - start.y;
+      const cross = landscape ? t.clientY - start.y : t.clientX - start.x;
+      if (!dragging) {
+        if (Math.abs(d) < 6) return;
+        if (Math.abs(cross) > Math.abs(d)) return (start = null);
+        if (landscape) {
+          if (!start.fromHeader || d < 0) return (start = null);
+        } else if (!start.fromHeader) {
+          const atTop = content.scrollTop <= 0;
+          // At the half detent the content can't scroll yet: dragging up expands the sheet
+          // (like iOS sheets). At full height, only pull down from the very top.
+          const expandFromHalf = detentRef.current === 'half';
+          if (!(expandFromHalf || (atTop && d > 0))) return (start = null);
+        }
+        dragging = true;
+        sheet.style.transition = 'none';
+      }
+      e.preventDefault();
+      const pos = landscape ? t.clientX : t.clientY;
+      const dt = Math.max(1, e.timeStamp - last.t);
+      last = { y: pos, t: e.timeStamp, v: (pos - last.y) / dt };
+      let off = start.base + d;
+      if (off < 0) off = off / 4; // rubber-band past full height
+      sheet.style.transform = landscape ? `translateX(${Math.max(0, off)}px)` : `translateY(${off}px)`;
+    };
+    const onEnd = () => {
+      if (!start) return;
+      const s = start;
+      start = null;
+      if (!dragging) return;
+      dragging = false;
+      const rect = sheet.getBoundingClientRect();
+      const off = landscape ? rect.left - (window.innerWidth - rect.width) : rect.top - (window.innerHeight - rect.height);
+      const projected = off + last.v * FLICK_MS;
+      sheet.style.transition = '';
+      sheet.style.transform = '';
+      if (landscape) {
+        if (projected > SWIPE_CLOSE_PX) onCloseRef.current();
+        return;
+      }
+      const half = halfOffset();
+      const fromHalf = s.base > 0;
+      // a flick steps one detent at a time: full -> half, half -> closed
+      if (fromHalf && (projected > half + SWIPE_CLOSE_PX || (projected > half + 40 && last.v > 0.5))) onCloseRef.current();
+      else setDetent(projected < half / 2 ? 'full' : 'half');
+    };
+
+    sheet.addEventListener('touchstart', onStart, { passive: true });
+    sheet.addEventListener('touchmove', onMove, { passive: false });
+    sheet.addEventListener('touchend', onEnd);
+    sheet.addEventListener('touchcancel', onEnd);
+    return () => {
+      sheet.removeEventListener('touchstart', onStart);
+      sheet.removeEventListener('touchmove', onMove);
+      sheet.removeEventListener('touchend', onEnd);
+      sheet.removeEventListener('touchcancel', onEnd);
+    };
+  }, [mounted, landscape]);
+
   if (!mounted) return null;
 
-  const onTouchStart = (e: React.TouchEvent) => {
-    const t = e.touches[0];
-    dragStart.current = { x: t.clientX, y: t.clientY };
-  };
-  const onTouchMove = (e: React.TouchEvent) => {
-    if (!dragStart.current) return;
-    const t = e.touches[0];
-    const d = landscape ? t.clientX - dragStart.current.x : t.clientY - dragStart.current.y;
-    // only follow the finger when the content is scrolled to the top (portrait)
-    if (!landscape && (scrollRef.current?.scrollTop ?? 0) > 0) return;
-    setDrag(Math.max(0, d));
-  };
-  const onTouchEnd = () => {
-    if (drag > SWIPE_CLOSE_PX) onClose();
-    setDrag(0);
-    dragStart.current = null;
-  };
-
-  const hidden = landscape ? 'translateX(105%)' : 'translateY(105%)';
-  const transform = !shown ? hidden : drag ? (landscape ? `translateX(${drag}px)` : `translateY(${drag}px)`) : 'none';
+  // Portrait: the sheet is full height and sits translated down to a half-screen detent.
+  // Moving it is a pure GPU transform (no height/layout animation).
+  const transform = !shown
+    ? landscape
+      ? 'translateX(105%)'
+      : 'translateY(105%)'
+    : landscape || detent === 'full'
+      ? 'none'
+      : 'translateY(calc(100% - 50dvh))';
 
   const sheetStyle: React.CSSProperties = landscape
     ? {
@@ -128,7 +207,7 @@ export default function LookupDrawer({ request, orientation, onClose }: Props) {
         paddingRight: 'env(safe-area-inset-right)',
         paddingBottom: 'env(safe-area-inset-bottom)',
       }
-    : { left: 0, right: 0, bottom: 0, height: '50dvh', minHeight: 280 };
+    : { left: 0, right: 0, bottom: 0, height: 'calc(100dvh - env(safe-area-inset-top) - 12px)' };
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -151,17 +230,24 @@ export default function LookupDrawer({ request, orientation, onClose }: Props) {
         className={`absolute flex flex-col overflow-hidden bg-surface text-fg shadow-[0_0_40px_rgb(0_0_0/0.3)] ${
           landscape ? 'border-l border-line' : 'rounded-t-[20px]'
         }`}
+        ref={sheetRef}
         style={{
           ...sheetStyle,
           transform,
-          transition: drag ? 'none' : `transform ${ANIM_MS}ms cubic-bezier(0.2, 0.8, 0.2, 1)`,
+          transition: `transform ${ANIM_MS}ms cubic-bezier(0.2, 0.8, 0.2, 1)`,
+          willChange: 'transform',
         }}
       >
-        <div onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd} className="shrink-0">
+        <div ref={headerRef} className="shrink-0 touch-none">
           {!landscape && (
-            <div className="flex justify-center pt-2 pb-1">
-              <div className="h-1.5 w-10 rounded-full bg-line" />
-            </div>
+            <button
+              type="button"
+              onClick={() => setDetent((d) => (d === 'half' ? 'full' : 'half'))}
+              className="flex w-full justify-center pt-2 pb-1"
+              aria-label={detent === 'half' ? 'Expand lookup' : 'Shrink lookup'}
+            >
+              <span className="h-1.5 w-10 rounded-full bg-line" />
+            </button>
           )}
           <div className={`flex items-center gap-2 px-3 ${landscape ? 'pt-3' : 'pt-1'} pb-2`}>
             {stack.length > 1 && (
@@ -213,6 +299,7 @@ export default function LookupDrawer({ request, orientation, onClose }: Props) {
               result={current.response.result}
               fromCache={current.response.fromCache}
               compact={!landscape}
+              onMapOpen={() => setDetent('full')}
               onPickCandidate={(title) => {
                 setInput(title);
                 run(title, { exactTitle: true, push: true });
