@@ -180,7 +180,9 @@ export default function LibraryView({ onOpen }: Props) {
 
   return (
     <div className="h-dvh-safe overflow-y-auto bg-bg">
-      <header className="pt-safe sticky top-0 z-20 border-b border-line bg-chrome backdrop-blur-md">
+      {/* Fixed, opaque, no backdrop-filter, and its buttons sit below the band iOS 26 blurs
+          under the status bar (see .pt-safe-bar). */}
+      <header className="pt-safe-bar fixed inset-x-0 top-0 z-20 border-b border-line bg-chrome">
         <div className="px-safe mx-auto flex h-14 max-w-5xl items-center justify-between">
           <div className="flex items-center gap-2.5">
             <OwlMark size={28} />
@@ -190,7 +192,10 @@ export default function LibraryView({ onOpen }: Props) {
         </div>
       </header>
 
-      <main className="px-safe pb-safe mx-auto max-w-5xl pt-5 pb-10">
+      <main
+        className="px-safe pb-safe mx-auto max-w-5xl pb-10"
+        style={{ paddingTop: 'calc(56px + 20px + env(safe-area-inset-top) * 1.25)' }}
+      >
         {busy && (
           <div role="status" className="mb-4 flex items-center gap-2 rounded-xl bg-surface-2 px-4 py-3 text-[14px]">
             <span className="h-3 w-3 animate-spin rounded-full border-2 border-accent border-t-transparent" />

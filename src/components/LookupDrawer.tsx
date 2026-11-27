@@ -126,8 +126,13 @@ export default function LookupDrawer({ request, orientation, onClose }: Props) {
       const d = landscape ? t.clientX - start.x : t.clientY - start.y;
       const cross = landscape ? t.clientY - start.y : t.clientX - start.x;
       if (!dragging) {
-        if (Math.abs(d) < 6) return;
-        if (Math.abs(cross) > Math.abs(d)) return (start = null);
+        // A finger tap drifts a few px; a 6px threshold turned taps on a meaning into tiny
+        // drags (preventDefault cancels the click). Require a clear, mostly-vertical move.
+        if (Math.abs(d) < 12) {
+          if (Math.abs(cross) >= 12) start = null;
+          return;
+        }
+        if (Math.abs(cross) * 1.5 > Math.abs(d)) return (start = null);
         if (landscape) {
           if (!start.fromHeader || d < 0) return (start = null);
         } else if (!start.fromHeader) {

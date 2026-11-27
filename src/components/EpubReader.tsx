@@ -121,7 +121,16 @@ const EpubReader = forwardRef<ReaderHandle, Props>(function EpubReader(props, re
     viewRef.current?.renderer?.setAttribute('flow', props.flow);
   }, [props.flow]);
 
-  return <div ref={hostRef} className="h-full w-full" style={{ background: 'var(--reader-bg)' }} />;
+  // keep text out from under the status bar and home indicator
+  return (
+    <div className="relative h-full w-full" style={{ background: 'var(--reader-bg)' }}>
+      <div
+        ref={hostRef}
+        className="absolute inset-x-0"
+        style={{ top: 'calc(env(safe-area-inset-top) * 1.25)', bottom: 'env(safe-area-inset-bottom)' }}
+      />
+    </div>
+  );
 });
 
 export default EpubReader;

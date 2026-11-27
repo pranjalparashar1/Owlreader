@@ -36,7 +36,7 @@ export function useSettings() {
     }
     document.documentElement.dataset.theme = settings.theme;
     const meta = document.querySelector('meta[name="theme-color"]');
-    meta?.setAttribute('content', settings.theme === 'dark' ? '#0f0f0f' : settings.theme === 'sepia' ? '#efe5cf' : '#faf7f2');
+    meta?.setAttribute('content', settings.theme === 'dark' ? '#161514' : settings.theme === 'sepia' ? '#efe5cf' : '#faf7f2');
   }, [settings]);
   const update = useCallback((patch: Partial<Settings>) => setSettings((s) => ({ ...s, ...patch })), []);
   return [settings, update] as const;

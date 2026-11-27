@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { pdfjs, type PDFDocumentProxy } from '../lib/pdfjs';
 import { localFlag } from '../lib/settings';
 import type { ReaderTheme } from '../types';
@@ -14,13 +14,12 @@ const SCROLL_IDLE_MS = 140;
 
 const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
 
-/** Theme colours are applied by pdf.js while drawing (no CSS filter on huge layers while scrolling). */
-const PAGE_COLORS: Record<ReaderTheme, { background: string; foreground: string } | undefined> = {
-  light: undefined,
-  sepia: { background: '#f4ecd8', foreground: '#3b2d1c' },
-  dark: { background: '#1b1b1b', foreground: '#d6d3d1' },
-};
-const PAGE_BG: Record<ReaderTheme, string> = { light: '#ffffff', sepia: '#f4ecd8', dark: '#1b1b1b' };
+/**
+ * Dark and sepia are a GPU CSS filter on each page canvas (see index.css). pdf.js's own
+ * `pageColors` relies on canvas `ctx.filter`, which iOS Safari ignores, so pages stayed white.
+ * Box colour shown before a page has rendered, matching the filtered page:
+ */
+const PAGE_BG: Record<ReaderTheme, string> = { light: '#ffffff', sepia: '#f6eedd', dark: '#1f1f1f' };
 
 type Size = { w: number; h: number };
 
@@ -29,6 +28,9 @@ type Size = { w: number; h: number };
  * scrolling: pdf.js draws on the main thread, so rendering mid-gesture is what makes
  * native scrolling stutter on iPhone.
  */
+/** Text-layer tasks sort just after their page's canvas (same distance, canvas first). */
+const textKey = (num: number) => num + 0.5;
+
 class RenderScheduler {
   private queue = new Map<number, () => Promise<void>>();
   private running = false;
@@ -219,9 +221,9 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
       if (el0) frac = (top - el0.offsetTop) / Math.max(1, el0.offsetHeight);
       // visible range plus one screen of lookahead either side
       let first = a;
-      while (first > 0 && (pages[first]?.offsetTop ?? 0) + (pages[first]?.offsetHeight ?? 0) > top - el.clientHeight) first--;
+      while (first > 0 && (pages[first]?.offsetTop ?? 0) + (pages[first]?.offsetHeight ?? 0) > top - el.clientHeight * 1.5) first--;
       let last = a;
-      while (last < numPages - 1 && (pages[last + 1]?.offsetTop ?? Infinity) < top + el.clientHeight * 2) last++;
+      while (last < numPages - 1 && (pages[last + 1]?.offsetTop ?? Infinity) < top + el.clientHeight * 2.5) last++;
       lo = first + 1;
       hi = last + 1;
     }
@@ -267,29 +269,29 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
   }, [viewport, zoom, sizes, paged, numPages, locate]);
 
 
-  // ---- scroll handling: track position, pause rendering while moving
+  // ---- scroll handling. While the finger or momentum is moving we do *nothing* but note
+  // that we're scrolling: no React state, no DOM changes, no pdf.js work. iOS scrolls on its
+  // own thread, but it still needs the main thread free to paint newly exposed content.
+  // Position, page label and which pages are live all update once scrolling settles.
   useEffect(() => {
     const el = scrollerRef.current!;
-    let frame = 0;
     let idle: number | undefined;
+    const settle = () => {
+      scheduler.scrolling = false;
+      locate();
+      scheduler.pump();
+    };
     const onScroll = () => {
       scheduler.scrolling = true;
       window.clearTimeout(idle);
-      idle = window.setTimeout(() => {
-        scheduler.scrolling = false;
-        locate();
-        scheduler.pump();
-      }, SCROLL_IDLE_MS);
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(locate);
+      idle = window.setTimeout(settle, SCROLL_IDLE_MS);
     };
     el.addEventListener('scroll', onScroll, { passive: true });
-    // in Pages mode each slot scrolls vertically too (tall or zoomed pages)
+    // in Pages mode the live slots scroll vertically too (tall or zoomed pages)
     el.addEventListener('scroll', onScroll, { passive: true, capture: true });
     return () => {
       el.removeEventListener('scroll', onScroll);
       el.removeEventListener('scroll', onScroll, { capture: true });
-      cancelAnimationFrame(frame);
       window.clearTimeout(idle);
     };
   }, [locate, scheduler]);
@@ -411,8 +413,9 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
       scale = 1;
     };
     const onMove = (e: TouchEvent) => {
+      // No preventDefault: `touch-action: pan-x pan-y` already stops Safari's page zoom, and a
+      // non-passive touchmove would make every scroll gesture wait on the main thread.
       if (!pinch || e.touches.length !== 2) return;
-      e.preventDefault();
       const z = zoomRef.current;
       scale = Math.min(MAX_ZOOM / z, Math.max(MIN_ZOOM / z, dist(e.touches) / pinch.dist));
       pinch.target.style.transform = `scale(${scale})`;
@@ -427,9 +430,9 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
     };
     const stopGesture = (e: Event) => e.preventDefault();
     el.addEventListener('touchstart', onStart, { passive: true });
-    el.addEventListener('touchmove', onMove, { passive: false });
-    el.addEventListener('touchend', onEnd);
-    el.addEventListener('touchcancel', onEnd);
+    el.addEventListener('touchmove', onMove, { passive: true });
+    el.addEventListener('touchend', onEnd, { passive: true });
+    el.addEventListener('touchcancel', onEnd, { passive: true });
     el.addEventListener('gesturestart', stopGesture);
     return () => {
       el.removeEventListener('touchstart', onStart);
@@ -460,6 +463,10 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
     else prev();
   };
 
+  // stable so memoized pages don't re-render on every parent render
+  const registerPage = useCallback((i: number, el: HTMLDivElement | null) => {
+    pageRefs.current[i] = el;
+  }, []);
   const onTextInfo = useCallback((num: number, hasText: boolean) => {
     setTextless((prev) => {
       if (hasText === !prev.has(num)) return prev;
@@ -481,9 +488,8 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
         const node = (
           <PdfPage
             key={n}
-            ref={(el) => {
-              pageRefs.current[i] = el;
-            }}
+            index={i}
+            register={registerPage}
             doc={doc}
             num={n}
             width={w}
@@ -502,7 +508,9 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
             ref={(el) => {
               slotRefs.current[i] = el;
             }}
-            className="pdf-slot"
+            // only live slots are scroll containers: on iOS every overflow:auto element is its
+            // own native scroll view, and hundreds of them make the carousel stutter
+            className={isActive(n) ? 'pdf-slot is-live' : 'pdf-slot'}
           >
             <div className="pdf-slot-inner" style={{ width: Math.max(viewport.w, w + PAD * 2) }}>
               {node}
@@ -513,7 +521,7 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
     : null;
 
   return (
-    <div className="relative h-full w-full" style={{ background: 'var(--reader-bg)' }}>
+    <div className={`relative h-full w-full pdf-theme-${theme}`} style={{ background: 'var(--reader-bg)' }}>
       <div
         ref={scrollerRef}
         onClick={onClick}
@@ -564,6 +572,8 @@ export default PdfReader;
 // ---------------------------------------------------------------------------
 
 interface PageProps {
+  index: number;
+  register: (index: number, el: HTMLDivElement | null) => void;
   doc: PDFDocumentProxy;
   num: number;
   width: number;
@@ -581,10 +591,20 @@ interface PageProps {
  * text layer. pdf.js positions text-layer spans in percentages scaled by --total-scale-factor,
  * so the text layer only needs that variable updated on zoom, not a re-render.
  */
-const PdfPage = forwardRef<HTMLDivElement, PageProps>(function PdfPage(
-  { doc, num, width, height, scale, active, theme, scheduler, onTextInfo },
-  ref,
-) {
+// memo: during a scroll the parent re-renders (current page, range); untouched pages must not.
+const PdfPage = memo(function PdfPage({
+  index,
+  register,
+  doc,
+  num,
+  width,
+  height,
+  scale,
+  active,
+  theme,
+  scheduler,
+  onTextInfo,
+}: PageProps) {
   const boxRef = useRef<HTMLDivElement | null>(null);
   const textRef = useRef<HTMLDivElement>(null);
   const rendered = useRef<{ key: string; canvas: HTMLCanvasElement } | null>(null);
@@ -606,7 +626,7 @@ const PdfPage = forwardRef<HTMLDivElement, PageProps>(function PdfPage(
       return;
     }
     const dpr = window.devicePixelRatio || 1;
-    const key = `${scale.toFixed(4)}|${theme}|${dpr}`;
+    const key = `${scale.toFixed(4)}|${dpr}`;
     if (rendered.current?.key === key) return;
     let cancelled = false;
     let renderTask: { cancel(): void; promise: Promise<unknown> } | null = null;
@@ -625,8 +645,7 @@ const PdfPage = forwardRef<HTMLDivElement, PageProps>(function PdfPage(
         canvas,
         viewport,
         transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined,
-        // with pageColors, pdf.js maps the white page to `background` and ink to `foreground`
-        ...(PAGE_COLORS[theme] ? { pageColors: PAGE_COLORS[theme] } : { background: '#ffffff' }),
+        background: '#ffffff',
       });
       try {
         await renderTask.promise;
@@ -651,7 +670,7 @@ const PdfPage = forwardRef<HTMLDivElement, PageProps>(function PdfPage(
       scheduler.cancel(num);
       renderTask?.cancel();
     };
-  }, [active, scale, theme, num, doc, scheduler]);
+  }, [active, scale, num, doc, scheduler]);
 
   // text layer (scale-independent)
   useEffect(() => {
@@ -665,7 +684,11 @@ const PdfPage = forwardRef<HTMLDivElement, PageProps>(function PdfPage(
     if (textDone.current) return;
     let cancelled = false;
     let layer: InstanceType<typeof pdfjs.TextLayer> | null = null;
-    (async () => {
+    // TextLayer measures every span (measureText + DOM writes), so it goes through the
+    // scheduler too: it never runs mid-scroll and never alongside a canvas render.
+    const key = textKey(num);
+    scheduler.request(key, async () => {
+      if (cancelled) return;
       const p = await doc.getPage(num);
       const content = await p.getTextContent();
       if (cancelled) return;
@@ -677,19 +700,19 @@ const PdfPage = forwardRef<HTMLDivElement, PageProps>(function PdfPage(
       end.className = 'endOfContent';
       tl.append(end);
       textDone.current = true;
-    })().catch(() => {});
+    });
     return () => {
       cancelled = true;
+      scheduler.cancel(key);
       layer?.cancel();
     };
-  }, [active, num, doc, onTextInfo]);
+  }, [active, num, doc, onTextInfo, scheduler]);
 
   return (
     <div
       ref={(el) => {
         boxRef.current = el;
-        if (typeof ref === 'function') ref(el);
-        else if (ref) ref.current = el;
+        register(index, el);
       }}
       className="pdf-page"
       data-page={num}

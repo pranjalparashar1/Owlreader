@@ -124,7 +124,7 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
     setScrub(null);
   };
 
-  const barBase = 'absolute inset-x-0 z-30 border-line bg-chrome backdrop-blur-md will-change-transform';
+  const barBase = 'fixed inset-x-0 z-30 border-line bg-chrome will-change-transform';
 
   return (
     <div className="h-dvh-safe relative w-full overflow-hidden" style={{ background: 'var(--reader-bg)' }}>
@@ -148,9 +148,12 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
         </div>
       )}
 
+      {/* solid band under the status bar so iOS's edge blur has nothing to smear */}
+      <div className="status-shield" style={{ background: 'var(--reader-bg)' }} aria-hidden />
+
       {/* top bar */}
       <header
-        className={`${barBase} pt-safe top-0 border-b`}
+        className={`${barBase} pt-safe-bar top-0 border-b`}
         style={{ transform: chrome ? 'none' : 'translateY(-110%)', visibility: chrome ? 'visible' : 'hidden', transition: barTransition(chrome) }}
         aria-hidden={!chrome}
       >
@@ -230,8 +233,8 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   );
 }
 
-// Slide on the compositor; flip visibility only after sliding out so a hidden bar's
-// backdrop blur isn't recomputed on every frame of scrolling underneath it.
+// Slide on the compositor; flip visibility only after sliding out so a hidden bar
+// isn't composited on every frame of scrolling underneath it.
 const barTransition = (shown: boolean) =>
   shown
     ? 'transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s'
