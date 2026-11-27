@@ -1,0 +1,30 @@
+import type { BookRecord, ReaderLocation, ReaderTheme, ReadingProgress } from '../types';
+
+export interface ReaderHandle {
+  goToFraction(fraction: number): void;
+  goToPage?(page: number): void;
+  next(): void;
+  prev(): void;
+  zoom?(dir: 1 | -1 | 0): void; // PDF only: 0 = fit width
+}
+
+export interface ReaderProps {
+  book: BookRecord;
+  data: ArrayBuffer;
+  fileName: string;
+  theme: ReaderTheme;
+  /** Single funnel for position updates (saved to IndexedDB by the shell). */
+  onProgressChange: (p: ReadingProgress) => void;
+  onLocation: (loc: ReaderLocation) => void;
+  onCenterTap: () => void;
+  onPageTurn: () => void;
+  onError: (message: string) => void;
+}
+
+/** Which third of the reading area was tapped. */
+export function tapZone(x: number, width: number): 'prev' | 'center' | 'next' {
+  const f = x / width;
+  if (f < 0.28) return 'prev';
+  if (f > 0.72) return 'next';
+  return 'center';
+}
