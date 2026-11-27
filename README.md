@@ -13,7 +13,11 @@ npm run build      # type-check + production build into dist/
 npm run preview    # serve dist/ (service worker enabled)
 ```
 
-To try it on an iPhone, deploy `dist/` to any static host (Vercel, Netlify, GitHub Pages), open it in Safari, then *Share → Add to Home Screen*. For a GitHub Pages project site, build with `BASE=/Owlreader/ npm run build`.
+To try it on an iPhone, open the deployed site in Safari, then *Share → Add to Home Screen*.
+
+**GitHub Pages:** `.github/workflows/deploy-pages.yml` builds and deploys every push to `main` to `https://<user>.github.io/Owlreader/`. It sets `BASE=/Owlreader/`, which the Vite base, the PWA manifest `scope`/`start_url` and the service worker path all follow. One-time setup: *Settings → Pages → Build and deployment → Source: GitHub Actions*.
+
+Other static hosts (Vercel, Netlify) serve from `/`, so a plain `npm run build` is right there.
 
 ## How it fits together
 
