@@ -18,6 +18,9 @@ interface Props {
   onBack: () => void;
 }
 const SAVE_DEBOUNCE_MS = 600;
+const THUMB_W = 160; // scrubber preview render width in px (~0.04 MP)
+const THUMB_THROTTLE_MS = 70;
+const CARD_W = 132; // preview card width in CSS px
 
 // PDF.js is ~450 kB: keep it out of the library screen's first load.
 const PdfReader = lazy(() => import('./PdfReader'));
@@ -108,11 +111,45 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   const fill = scrubMax > 1 ? ((scrubValue - 1) / (scrubMax - 1)) * 100 : 0;
   const scrubLabel = scrub !== null ? `Page ${scrub} of ${pageCount}` : location?.label ?? '';
 
-  const commitScrub = () => {
-    if (scrub === null) return;
-    readerRef.current?.goToPage(scrub);
-    setScrub(null);
+  // ---- live scrubber preview: throttled micro-thumbnail of the page under the thumb. Only the
+  // newest request may paint; the reader cancels superseded renders, so fast drags never queue.
+  const scrubRef = useRef<number | null>(null);
+  scrubRef.current = scrub;
+  const thumbHost = useRef<HTMLDivElement>(null);
+  const thumbSeq = useRef(0);
+  const thumbTimer = useRef<number | undefined>(undefined);
+  const lastThumbAt = useRef(0);
+  const wantThumb = useRef(1);
+  const fireThumb = useCallback(() => {
+    thumbTimer.current = undefined;
+    lastThumbAt.current = performance.now();
+    const n = wantThumb.current;
+    const seq = ++thumbSeq.current;
+    readerRef.current?.renderThumbnail(n, THUMB_W).then((c) => {
+      if (seq !== thumbSeq.current || !c || scrubRef.current === null) return;
+      thumbHost.current?.replaceChildren(c);
+      thumbHost.current?.setAttribute('data-page', String(n));
+    });
+  }, []);
+  const onScrubInput = (n: number) => {
+    if (scrubRef.current === null) thumbHost.current?.replaceChildren(); // new drag: no stale page
+    setScrub(n);
+    wantThumb.current = n;
+    const wait = THUMB_THROTTLE_MS - (performance.now() - lastThumbAt.current);
+    if (wait <= 0) fireThumb();
+    else thumbTimer.current ??= window.setTimeout(fireThumb, wait);
   };
+  const commitScrub = () => {
+    const target = scrubRef.current;
+    if (target === null) return;
+    window.clearTimeout(thumbTimer.current);
+    thumbTimer.current = undefined;
+    thumbSeq.current++; // late thumbnails must not repaint the closed card
+    scrubRef.current = null;
+    setScrub(null);
+    readerRef.current?.goToPage(target);
+  };
+  useEffect(() => () => window.clearTimeout(thumbTimer.current), []);
 
   const barBase = 'fixed inset-x-0 z-30 border-line bg-chrome will-change-transform';
 
@@ -164,7 +201,25 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
         aria-hidden={!chrome}
       >
         <div className="px-safe pt-2 pb-2">
-          <div className="flex items-center gap-3">
+          <div className="relative flex items-center gap-3">
+            {/* stays mounted so the canvas host keeps its node; hidden when not scrubbing */}
+            <div
+              className="scrub-preview"
+              aria-hidden
+              style={{
+                display: scrub === null ? 'none' : undefined,
+                width: CARD_W,
+                left: `clamp(0px, calc(10px + (100% - 20px) * ${fill / 100} - ${CARD_W / 2}px), calc(100% - ${CARD_W}px))`,
+              }}
+            >
+              <div ref={thumbHost} className="scrub-thumb" />
+              <div className="mt-1.5 text-center text-[12px] leading-tight font-semibold tabular-nums">
+                Page {scrubValue} of {pageCount}
+              </div>
+              <div className="text-center text-[11px] text-muted tabular-nums">
+                {pageCount ? Math.round((scrubValue / pageCount) * 100) : 0}%
+              </div>
+            </div>
             <input
               type="range"
               className="scrubber min-w-0 flex-1"
@@ -173,7 +228,7 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
               value={scrubValue}
               disabled={!location || pageCount < 2}
               style={{ ['--fill' as string]: `${fill}%` }}
-              onChange={(e) => setScrub(Number(e.target.value))}
+              onChange={(e) => onScrubInput(Number(e.target.value))}
               onPointerUp={commitScrub}
               onTouchEnd={commitScrub}
               onKeyUp={commitScrub}

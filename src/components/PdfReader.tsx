@@ -20,6 +20,7 @@ const QUIET_MS = 300; // idle time before the sharp pass and page-size probing r
 const PROBE_WINDOW = 20; // real page sizes are fetched for current ± this many pages
 const PROBE_BATCH = 4;
 const MOUNT_AROUND = 8; // Scroll mode keeps current ± this many page boxes in the DOM
+const THUMB_CACHE = 48; // scrubber micro-thumbnails kept (≈0.04 MP each, ~7 MB worst case)
 
 const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
 
@@ -511,15 +512,77 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
     [zoom, paged],
   );
 
+  // ---- scrubber micro-thumbnails: tiny renders that bypass the queue (they're <10 ms and the
+  // reader isn't scrolling while you drag). A newer request cancels the one in flight, and a
+  // small LRU makes dragging back and forth instant. Dropped on theme change and book close.
+  const thumbs = useRef(new Map<string, HTMLCanvasElement>());
+  const thumbJob = useRef<{ cancel: () => void } | null>(null);
+  useEffect(() => {
+    const cache = thumbs.current;
+    return () => {
+      thumbJob.current?.cancel();
+      for (const c of cache.values()) c.width = 0;
+      cache.clear();
+    };
+  }, [doc, theme]);
+  const renderThumbnail = useCallback(
+    async (n: number, widthPx: number): Promise<HTMLCanvasElement | null> => {
+      if (!doc || n < 1 || n > doc.numPages) return null;
+      const key = `${n}|${Math.round(widthPx)}`;
+      const cache = thumbs.current;
+      const hit = cache.get(key);
+      if (hit) {
+        cache.delete(key); // refresh LRU order
+        cache.set(key, hit);
+        return hit;
+      }
+      thumbJob.current?.cancel();
+      let cancelled = false;
+      let task: { cancel(): void; promise: Promise<unknown> } | null = null;
+      thumbJob.current = {
+        cancel: () => {
+          cancelled = true;
+          task?.cancel();
+        },
+      };
+      try {
+        const p = await doc.getPage(n);
+        if (cancelled) return null;
+        const vp = p.getViewport({ scale: widthPx / p.getViewport({ scale: 1 }).width });
+        let canvas = document.createElement('canvas');
+        canvas.width = Math.round(vp.width);
+        canvas.height = Math.round(vp.height);
+        task = p.render({ canvas, viewport: vp, background: '#ffffff' });
+        await task.promise;
+        if (cancelled) {
+          canvas.width = 0;
+          return null;
+        }
+        canvas = tintCanvas(canvas, theme);
+        cache.set(key, canvas);
+        while (cache.size > THUMB_CACHE) {
+          const [oldKey, old] = cache.entries().next().value!;
+          cache.delete(oldKey);
+          old.width = 0;
+        }
+        return canvas;
+      } catch {
+        return null;
+      }
+    },
+    [doc, theme],
+  );
+
   useImperativeHandle(
     ref,
     () => ({
       goToPage: (n) => goToPage(n),
+      renderThumbnail,
       next,
       prev,
       zoom: (dir) => zoomAt(dir === 0 ? 1 : dir > 0 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP),
     }),
-    [goToPage, next, prev, zoom, zoomAt],
+    [goToPage, renderThumbnail, next, prev, zoom, zoomAt],
   );
 
   // ---- keyboard
