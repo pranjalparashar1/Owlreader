@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Orientation } from '../types';
-import { lookup, normalizeQuery, OfflineError, type LookupResponse } from '../services/wikipedia';
+import { lookup, normalizeQuery, OfflineError, ServiceError, type LookupResponse } from '../services/wikipedia';
 import LookupCard from './LookupCard';
 import { BackIcon, CloseIcon, SearchIcon } from './icons';
 
@@ -18,7 +18,7 @@ interface Props {
 type View =
   | { status: 'loading'; query: string }
   | { status: 'done'; response: LookupResponse }
-  | { status: 'error'; query: string; message: string; offline: boolean };
+  | { status: 'error'; query: string; exactTitle?: boolean; message: string; detail?: string };
 
 const ANIM_MS = 260;
 const SWIPE_CLOSE_PX = 90;
@@ -64,20 +64,23 @@ export default function LookupDrawer({ request, orientation, onClose }: Props) {
     return () => window.clearTimeout(t);
   }, [open]);
 
-  async function run(query: string, opts: { exactTitle?: boolean; push?: boolean } = {}) {
+  async function run(query: string, opts: { exactTitle?: boolean; push?: boolean; retry?: boolean } = {}) {
     const id = ++runId.current;
     const loading: View = { status: 'loading', query };
-    setStack((s) => (opts.push ? [...s, loading] : [loading]));
+    setStack((s) => (opts.push ? [...s, loading] : opts.retry ? [...s.slice(0, -1), loading] : [loading]));
     let next: View;
     try {
       next = { status: 'done', response: await lookup(query, opts) };
     } catch (e) {
-      const offline = e instanceof OfflineError;
       next = {
         status: 'error',
         query,
-        offline,
-        message: offline ? "You're offline, and this hasn't been looked up before." : 'Lookup failed. Please try again.',
+        exactTitle: opts.exactTitle,
+        ...(e instanceof OfflineError
+          ? { message: "You're offline, and this hasn't been looked up before." }
+          : e instanceof ServiceError
+            ? { message: e.message, detail: e.reason === 'timeout' ? 'Check your connection and try again.' : 'Give it a moment and try again.' }
+            : { message: 'Lookup failed. Please try again.' }),
       };
     }
     if (id !== runId.current) return;
@@ -291,11 +294,12 @@ export default function LookupDrawer({ request, orientation, onClose }: Props) {
           {current?.status === 'error' && (
             <div className="px-5 py-8 text-center">
               <p className="text-[15px] font-medium">{current.message}</p>
+              {current.detail && <p className="mt-1 text-[13px] text-muted">{current.detail}</p>}
               <button
-                onClick={() => run(current.query)}
+                onClick={() => run(current.query, { exactTitle: current.exactTitle, retry: true })}
                 className="mt-4 rounded-full bg-fg px-4 py-2 text-[14px] font-semibold text-bg"
               >
-                Try again
+                Retry
               </button>
             </div>
           )}

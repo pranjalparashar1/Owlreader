@@ -3,22 +3,23 @@ import type { ReaderTheme } from '../types';
 
 export interface Settings {
   theme: ReaderTheme;
-  fontPct: number; // EPUB font size, percent
-  /** Pages (swipe sideways) or Scroll (continuous vertical), for both EPUB and PDF. */
+  /** Pages (swipe sideways) or Scroll (continuous vertical). */
   flow: 'paginated' | 'scrolled';
 }
 
 const KEY = 'owl.settings.v1';
-const DEFAULTS: Settings = { theme: 'light', fontPct: 110, flow: 'paginated' };
+const DEFAULTS: Settings = { theme: 'light', flow: 'paginated' };
 
 function load(): Settings {
   try {
     const raw = localStorage.getItem(KEY);
     if (raw) {
       const saved = JSON.parse(raw);
-      if (saved.epubFlow && !saved.flow) saved.flow = saved.epubFlow; // 1.0 → 1.1
-      delete saved.epubFlow;
-      return { ...DEFAULTS, ...saved };
+      // keep only keys this version knows (drops 1.1's text-size setting and other leftovers)
+      const out = { ...DEFAULTS };
+      if (saved.theme === 'light' || saved.theme === 'sepia' || saved.theme === 'dark') out.theme = saved.theme;
+      if (saved.flow === 'paginated' || saved.flow === 'scrolled') out.flow = saved.flow;
+      return out;
     }
   } catch {
     /* storage unavailable */

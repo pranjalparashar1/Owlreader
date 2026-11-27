@@ -7,6 +7,7 @@ import type { Settings } from '../lib/settings';
 import LookupPill from './LookupPill';
 import LookupDrawer, { type LookupRequest } from './LookupDrawer';
 import ReaderSettings from './ReaderSettings';
+import { ErrorScreen } from './ErrorBoundary';
 import type { ReaderHandle } from './readerTypes';
 import { BackIcon, FitWidthIcon } from './icons';
 
@@ -16,12 +17,9 @@ interface Props {
   onSettings: (patch: Partial<Settings>) => void;
   onBack: () => void;
 }
-
-
 const SAVE_DEBOUNCE_MS = 600;
 
-// Each engine is its own chunk: PDF.js alone is ~400 kB and EPUB readers never need it.
-const EpubReader = lazy(() => import('./EpubReader'));
+// PDF.js is ~450 kB: keep it out of the library screen's first load.
 const PdfReader = lazy(() => import('./PdfReader'));
 
 export default function ReaderShell({ book, settings, onSettings, onBack }: Props) {
@@ -104,23 +102,15 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
     onError: setError,
   };
 
-  const isPdf = book.format === 'pdf';
   const pageCount = location?.pageCount ?? 0;
-  const scrubValue = scrub ?? (isPdf ? location?.page ?? 1 : Math.round((location?.fraction ?? 0) * 1000));
-  const scrubMax = isPdf ? Math.max(1, pageCount) : 1000;
-  const scrubMin = isPdf ? 1 : 0;
-  const fill = scrubMax > scrubMin ? ((scrubValue - scrubMin) / (scrubMax - scrubMin)) * 100 : 0;
-  const scrubLabel =
-    scrub !== null
-      ? isPdf
-        ? `Page ${scrub} of ${pageCount}`
-        : `${(scrub / 10).toFixed(0)}%`
-      : location?.label || (location ? `${Math.round(location.fraction * 100)}%` : '');
+  const scrubValue = scrub ?? location?.page ?? 1;
+  const scrubMax = Math.max(1, pageCount);
+  const fill = scrubMax > 1 ? ((scrubValue - 1) / (scrubMax - 1)) * 100 : 0;
+  const scrubLabel = scrub !== null ? `Page ${scrub} of ${pageCount}` : location?.label ?? '';
 
   const commitScrub = () => {
     if (scrub === null) return;
-    if (isPdf) readerRef.current?.goToPage?.(scrub);
-    else readerRef.current?.goToFraction(scrub / 1000);
+    readerRef.current?.goToPage(scrub);
     setScrub(null);
   };
 
@@ -130,21 +120,13 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
     <div className="h-dvh-safe relative w-full overflow-hidden" style={{ background: 'var(--reader-bg)' }}>
       <div className="absolute inset-0">
         <Suspense fallback={null}>
-          {readerProps &&
-            (isPdf ? (
-              <PdfReader ref={readerRef} {...readerProps} flow={settings.flow} />
-            ) : (
-              <EpubReader ref={readerRef} {...readerProps} fontPct={settings.fontPct} flow={settings.flow} />
-            ))}
+          {readerProps && <PdfReader ref={readerRef} {...readerProps} flow={settings.flow} />}
         </Suspense>
       </div>
 
       {error && (
-        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 p-8 text-center">
-          <p className="max-w-xs text-[15px]">{error}</p>
-          <button onClick={onBack} className="rounded-full bg-fg px-5 py-2.5 text-[15px] font-semibold text-bg">
-            Back to Library
-          </button>
+        <div className="absolute inset-0 z-[60]">
+          <ErrorScreen title="Couldn't open this book" message={error} onBack={onBack} />
         </div>
       )}
 
@@ -186,25 +168,24 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
             <input
               type="range"
               className="scrubber min-w-0 flex-1"
-              min={scrubMin}
+              min={1}
               max={scrubMax}
               value={scrubValue}
-              disabled={!location || (isPdf && pageCount < 2)}
+              disabled={!location || pageCount < 2}
               style={{ ['--fill' as string]: `${fill}%` }}
               onChange={(e) => setScrub(Number(e.target.value))}
               onPointerUp={commitScrub}
               onTouchEnd={commitScrub}
               onKeyUp={commitScrub}
-              aria-label={isPdf ? 'Page' : 'Position in book'}
+              aria-label="Page"
+              aria-valuetext={`Page ${scrubValue} of ${pageCount}`}
             />
           </div>
           <div className="mt-1 flex items-center justify-between gap-2">
             <div className="min-w-0 flex-1 truncate text-[12px] text-muted">{scrubLabel}</div>
-            {isPdf && (
-              <ToolButton label="Fit width" onClick={() => readerRef.current?.zoom?.(0)}>
-                <FitWidthIcon size={18} />
-              </ToolButton>
-            )}
+            <ToolButton label="Fit width" onClick={() => readerRef.current?.zoom(0)}>
+              <FitWidthIcon size={18} />
+            </ToolButton>
             <div className="flex items-center gap-1">
               <ToolButton label="Previous page" onClick={() => readerRef.current?.prev()}>
                 <BackIcon size={18} />
@@ -222,10 +203,10 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
       )}
       <ReaderSettings
         open={settingsOpen}
-        format={book.format}
         settings={settings}
+        zoom={location?.zoom ?? 1}
         onSettings={onSettings}
-        onZoom={(dir) => readerRef.current?.zoom?.(dir)}
+        onZoom={(dir) => readerRef.current?.zoom(dir)}
         onClose={() => setSettingsOpen(false)}
       />
       <LookupDrawer request={lookupReq} orientation={orientation} onClose={closeLookup} />

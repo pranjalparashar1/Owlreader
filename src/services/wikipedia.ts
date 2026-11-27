@@ -3,6 +3,9 @@ import { getCachedLookup, putCachedLookup } from '../db/libraryDb';
 
 const REST = 'https://en.wikipedia.org/api/rest_v1/page/summary/';
 const ACTION = 'https://en.wikipedia.org/w/api.php';
+const TIMEOUT_MS = 8000;
+// Wikimedia asks browser clients to identify themselves with this header (User-Agent can't be set from JS).
+const API_USER_AGENT = `OwlReader/${__APP_VERSION__} (https://github.com/pranjalparashar1/Owlreader)`;
 
 export interface LookupResponse {
   result: LookupResult;
@@ -12,6 +15,22 @@ export interface LookupResponse {
 export class OfflineError extends Error {
   constructor() {
     super("You're offline and this hasn't been looked up before.");
+  }
+}
+
+/** Wikipedia didn't answer in time, is rate-limiting us (429) or is having trouble (5xx). Worth retrying. */
+export class ServiceError extends Error {
+  constructor(
+    readonly reason: 'timeout' | 'busy' | 'server',
+    readonly status?: number,
+  ) {
+    super(
+      reason === 'timeout'
+        ? 'Wikipedia is taking too long to respond.'
+        : reason === 'busy'
+          ? 'Wikipedia is busy right now.'
+          : "Wikipedia isn't responding properly right now.",
+    );
   }
 }
 
@@ -67,15 +86,37 @@ interface SummaryJson {
   coordinates?: { lat: number; lon: number };
 }
 
+/**
+ * GET JSON with an 8 s timeout. 404 and other 4xx come back as a status so callers can fall
+ * back to search; 429/5xx and timeouts throw ServiceError so the drawer offers Retry instead of
+ * a misleading "not found".
+ */
 async function fetchJson(url: string): Promise<{ status: number; data?: unknown }> {
-  let res: Response;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
-    res = await fetch(url, { headers: { Accept: 'application/json' } });
-  } catch {
-    throw new OfflineError();
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        headers: { Accept: 'application/json', 'Api-User-Agent': API_USER_AGENT },
+        signal: ctrl.signal,
+      });
+    } catch {
+      if (ctrl.signal.aborted) throw new ServiceError('timeout');
+      throw new OfflineError();
+    }
+    if (res.status === 429) throw new ServiceError('busy', 429);
+    if (res.status >= 500) throw new ServiceError('server', res.status);
+    if (!res.ok) return { status: res.status };
+    try {
+      return { status: res.status, data: await res.json() };
+    } catch {
+      // body cut off by the timeout, or not JSON
+      throw new ServiceError(ctrl.signal.aborted ? 'timeout' : 'server', res.status);
+    }
+  } finally {
+    clearTimeout(timer);
   }
-  if (!res.ok) return { status: res.status };
-  return { status: res.status, data: await res.json() };
 }
 
 /** Pick an image no wider than ~1200px: the original can be a 30 MB TIFF-derived JPEG. */

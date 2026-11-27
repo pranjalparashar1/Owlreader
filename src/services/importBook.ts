@@ -1,43 +1,12 @@
-import type { BookFormat, BookRecord } from '../types';
+import type { BookRecord } from '../types';
 import { addBook, requestPersistentStorage } from '../db/libraryDb';
-import { metaString } from '../lib/foliate';
 
 const COVER_W = 360;
 
-export function detectFormat(file: File): BookFormat | null {
-  const name = file.name.toLowerCase();
-  if (name.endsWith('.epub') || file.type === 'application/epub+zip') return 'epub';
-  if (name.endsWith('.pdf') || file.type === 'application/pdf') return 'pdf';
-  return null;
-}
+export const isPdfFile = (file: File) => file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf';
 
 const titleFromFilename = (name: string) =>
-  name.replace(/\.(epub|pdf)$/i, '').replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim() || 'Untitled';
-
-async function blobToCover(blob: Blob): Promise<string | undefined> {
-  try {
-    const bmp = await createImageBitmap(blob);
-    const scale = Math.min(1, COVER_W / bmp.width);
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.round(bmp.width * scale);
-    canvas.height = Math.round(bmp.height * scale);
-    canvas.getContext('2d')!.drawImage(bmp, 0, 0, canvas.width, canvas.height);
-    bmp.close?.();
-    return canvas.toDataURL('image/jpeg', 0.82);
-  } catch {
-    return undefined;
-  }
-}
-
-async function epubMeta(file: File, data: ArrayBuffer) {
-  const { makeBook } = await import('../vendor/foliate-js/view.js');
-  const book = await makeBook(new File([data], file.name || 'book.epub', { type: 'application/epub+zip' }));
-  const title = metaString(book.metadata?.title);
-  const author = metaString(book.metadata?.author);
-  const coverBlob = await book.getCover?.().catch(() => null);
-  const coverDataUrl = coverBlob ? await blobToCover(coverBlob) : undefined;
-  return { title, author, coverDataUrl };
-}
+  name.replace(/\.pdf$/i, '').replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim() || 'Untitled';
 
 async function pdfMeta(data: ArrayBuffer) {
   const { pdfjs } = await import('../lib/pdfjs');
@@ -64,15 +33,13 @@ async function pdfMeta(data: ArrayBuffer) {
 }
 
 export async function importBook(file: File): Promise<BookRecord> {
-  const format = detectFormat(file);
-  if (!format) throw new Error(`"${file.name}" isn't an EPUB or PDF.`);
+  if (!isPdfFile(file)) throw new Error(`"${file.name}" isn't a PDF. OwlReader opens PDF files only.`);
   requestPersistentStorage();
   const data = await file.arrayBuffer();
   let meta: { title?: string; author?: string; coverDataUrl?: string } = {};
   try {
-    meta = format === 'epub' ? await epubMeta(file, data) : await pdfMeta(data);
+    meta = await pdfMeta(data);
   } catch (e) {
-    if (format === 'epub') throw new Error(`Couldn't open "${file.name}". Is it a valid EPUB?`, { cause: e });
     throw new Error(`Couldn't open "${file.name}". Is it a valid PDF?`, { cause: e });
   }
   const now = Date.now();
@@ -80,7 +47,7 @@ export async function importBook(file: File): Promise<BookRecord> {
     id: crypto.randomUUID(),
     title: meta.title || titleFromFilename(file.name),
     author: meta.author,
-    format,
+    format: 'pdf',
     fileSize: file.size,
     addedAt: now,
     lastOpenedAt: now,

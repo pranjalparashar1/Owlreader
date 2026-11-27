@@ -1,4 +1,5 @@
-export type BookFormat = 'epub' | 'pdf';
+/** OwlReader 1.x opens PDFs only. Records from older versions may carry another format. */
+export type BookFormat = 'pdf';
 export type ReaderTheme = 'light' | 'sepia' | 'dark';
 export type Orientation = 'portrait' | 'landscape';
 
@@ -16,7 +17,6 @@ export interface BookRecord {
 
 export interface ReadingProgress {
   percentage: number; // 0..100 for library display
-  epubCfi?: string; // Exact EPUB location
   pdfPage?: number; // 1-indexed current page
   pdfScale?: number; // Last zoom level (multiplier of fit-width; 1 = fit width)
 }
@@ -49,4 +49,10 @@ export interface ReaderLocation {
   label?: string; // chapter title or "Page 3 of 120"
   page?: number;
   pageCount?: number;
+  zoom?: number; // multiplier of fit-width (1 = 100%)
+}
+
+/** Books saved by older versions in a format this version can't open (read straight from IndexedDB). */
+export function isSupportedBook(book: { format?: unknown }): boolean {
+  return book.format === 'pdf';
 }
