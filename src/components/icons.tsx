@@ -50,6 +50,9 @@ export const FitWidthIcon = (p: P) => (
 export const CloudOffIcon = (p: P) => (
   <svg {...base(p)}><path d="M3 3l18 18M8 7.5A5.5 5.5 0 0 1 17.4 10H18a4 4 0 0 1 2.3 7.3M17 19H7a4.5 4.5 0 0 1-1.4-8.8" /></svg>
 );
+export const RefreshIcon = (p: P) => (
+  <svg {...base(p)}><path d="M20 11a8 8 0 0 0-14.8-4M4 4v4h4M4 13a8 8 0 0 0 14.8 4M20 20v-4h-4" /></svg>
+);
 export const BookIcon = (p: P) => (
   <svg {...base(p)}><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5v-15Z" /><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5" /></svg>
 );

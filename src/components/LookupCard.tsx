@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { LookupResult } from '../types';
 import { osmEmbedUrl, osmPageUrl } from '../services/wikipedia';
-import { ChevronRight, CloudOffIcon, ExternalIcon, MapIcon } from './icons';
+import { ChevronRight, CloudOffIcon, ExternalIcon, MapIcon, RefreshIcon } from './icons';
 
 interface Props {
   result: LookupResult;
@@ -11,14 +11,16 @@ interface Props {
   compact?: boolean;
   /** Called when the map opens, so a half-height sheet can grow to show it. */
   onMapOpen?: () => void;
+  /** Refetch from Wikipedia, replacing the saved copy. Offered on cached results. */
+  onRefresh?: () => void;
 }
 
 /**
  * Pure renderer for one lookup result. Deliberately knows nothing about text selection,
  * so a future "On This Page" drawer can render auto-extracted entities with it as-is.
  */
-export default function LookupCard({ result, fromCache, onPickCandidate, compact, onMapOpen }: Props) {
-  if (result.type === 'disambiguation') return <Candidates result={result} onPick={onPickCandidate} />;
+export default function LookupCard({ result, fromCache, onPickCandidate, compact, onMapOpen, onRefresh }: Props) {
+  if (result.type === 'disambiguation') return <Candidates result={result} onPick={onPickCandidate} onRefresh={fromCache ? onRefresh : undefined} />;
   if (result.type === 'not_found') {
     return (
       <div className="px-5 py-8 text-center">
@@ -29,10 +31,10 @@ export default function LookupCard({ result, fromCache, onPickCandidate, compact
       </div>
     );
   }
-  return <Article result={result} fromCache={fromCache} compact={compact} onMapOpen={onMapOpen} />;
+  return <Article result={result} fromCache={fromCache} compact={compact} onMapOpen={onMapOpen} onRefresh={onRefresh} />;
 }
 
-function Candidates({ result, onPick }: { result: LookupResult; onPick: (title: string) => void }) {
+function Candidates({ result, onPick, onRefresh }: { result: LookupResult; onPick: (title: string) => void; onRefresh?: () => void }) {
   return (
     <div className="px-4 pt-3 pb-5">
       <p className="px-1 text-[13px] text-muted">
@@ -54,21 +56,46 @@ function Candidates({ result, onPick }: { result: LookupResult; onPick: (title: 
           </li>
         ))}
       </ul>
+      {onRefresh && (
+        <div className="mt-3 flex justify-end">
+          <RefreshButton onClick={onRefresh} />
+        </div>
+      )}
     </div>
   );
 }
 
+function RefreshButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium text-muted underline-offset-2 active:bg-surface-2 hover:underline"
+      aria-label="Refresh from Wikipedia"
+    >
+      <RefreshIcon size={12} /> Refresh
+    </button>
+  );
+}
+
+/**
+ * Images load with CORS (Wikimedia sends Access-Control-Allow-Origin: *) so the service worker
+ * caches real 200 responses. Opaque no-cors responses get padded to megabytes each against
+ * iOS's storage quota. If a CORS load ever fails, retry once as a plain image (not cached).
+ */
 function Hero({ src, portrait, compact }: { src: string; portrait?: boolean; compact?: boolean }) {
-  const [failed, setFailed] = useState(false);
-  if (failed) return null;
+  const [mode, setMode] = useState<'cors' | 'plain' | 'failed'>('cors');
+  if (mode === 'failed') return null;
+  const cross = mode === 'cors' ? 'anonymous' : undefined;
   return (
     <div className={`relative overflow-hidden bg-surface-2 ${compact ? 'h-[150px]' : 'h-[200px]'}`}>
       {/* blurred backdrop fills the letterbox so portraits aren't cropped at the forehead */}
-      <img src={src} alt="" aria-hidden className="absolute inset-0 h-full w-full scale-125 object-cover opacity-60 blur-2xl" />
+      <img key={mode} src={src} crossOrigin={cross} alt="" aria-hidden className="absolute inset-0 h-full w-full scale-125 object-cover opacity-60 blur-2xl" />
       <img
+        key={`${mode}-main`}
         src={src}
+        crossOrigin={cross}
         alt=""
-        onError={() => setFailed(true)}
+        onError={() => setMode((m) => (m === 'cors' ? 'plain' : 'failed'))}
         className={`relative h-full w-full object-contain ${portrait ? 'object-top' : 'object-center'}`}
       />
     </div>
@@ -80,11 +107,13 @@ function Article({
   fromCache,
   compact,
   onMapOpen,
+  onRefresh,
 }: {
   result: LookupResult;
   fromCache: boolean;
   compact?: boolean;
   onMapOpen?: () => void;
+  onRefresh?: () => void;
 }) {
   const [showMap, setShowMap] = useState(false);
   const coords = result.coordinates;
@@ -145,8 +174,11 @@ function Article({
             <span />
           )}
           {fromCache && (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-muted">
-              <CloudOffIcon size={12} /> Saved offline
+            <span className="flex shrink-0 items-center gap-1">
+              <span className="inline-flex items-center gap-1 rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-muted">
+                <CloudOffIcon size={12} /> Saved offline
+              </span>
+              {onRefresh && <RefreshButton onClick={onRefresh} />}
             </span>
           )}
         </div>

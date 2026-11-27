@@ -4,7 +4,7 @@ import type { BookRecord, LookupResult, ReadingProgress } from '../types';
 interface OwlDB extends DBSchema {
   books: { key: string; value: BookRecord };
   files: { key: string; value: { bookId: string; data: ArrayBuffer; name: string; type: string } };
-  lookupCache: { key: string; value: LookupResult & { key: string } };
+  lookupCache: { key: string; value: LookupResult & { key: string; usedAt?: number } };
 }
 
 let dbPromise: Promise<IDBPDatabase<OwlDB>> | null = null;
@@ -67,15 +67,32 @@ export async function touchBook(bookId: string) {
   await tx.done;
 }
 
+/** Most lookups kept; the least recently used go first. */
+export const LOOKUP_CACHE_MAX = 500;
+
 export async function getCachedLookup(key: string): Promise<LookupResult | undefined> {
-  const hit = await (await db()).get('lookupCache', key);
+  const d = await db();
+  const hit = await d.get('lookupCache', key);
   if (!hit) return undefined;
-  const { key: _k, ...result } = hit;
+  // mark as used for the LRU cap (best effort, doesn't block the lookup)
+  d.put('lookupCache', { ...hit, usedAt: Date.now() }).catch(() => {});
+  const { key: _k, usedAt: _u, ...result } = hit;
   return result;
 }
 
 export async function putCachedLookup(key: string, result: LookupResult) {
-  await (await db()).put('lookupCache', { ...result, key });
+  const d = await db();
+  await d.put('lookupCache', { ...result, key, usedAt: Date.now() });
+  if ((await d.count('lookupCache')) > LOOKUP_CACHE_MAX) await pruneLookups(d);
+}
+
+async function pruneLookups(d: IDBPDatabase<OwlDB>) {
+  const tx = d.transaction('lookupCache', 'readwrite');
+  const all: Array<[string, number]> = [];
+  for (let c = await tx.store.openCursor(); c; c = await c.continue()) all.push([c.key, c.value.usedAt ?? c.value.cachedAt ?? 0]);
+  all.sort((a, b) => a[1] - b[1]);
+  await Promise.all(all.slice(0, all.length - LOOKUP_CACHE_MAX).map(([k]) => tx.store.delete(k)));
+  await tx.done;
 }
 
 let persistRequested = false;

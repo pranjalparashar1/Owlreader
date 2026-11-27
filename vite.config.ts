@@ -42,12 +42,15 @@ export default defineConfig({
         runtimeCaching: [
           {
             // Lookup photos, so cached lookups still show their image in Airplane Mode.
+            // Images load with crossOrigin="anonymous", so only real 200s are cached: opaque
+            // (status 0) responses are padded to megabytes each against iOS's storage quota.
+            // New cache name: the 1.x opaque entries in 'wiki-images' are deleted on startup.
             urlPattern: ({ url }) => url.hostname === 'upload.wikimedia.org',
             handler: 'CacheFirst',
             options: {
-              cacheName: 'wiki-images',
-              expiration: { maxEntries: 400, maxAgeSeconds: 60 * 60 * 24 * 90 },
-              cacheableResponse: { statuses: [0, 200] },
+              cacheName: 'wiki-images-v2',
+              expiration: { maxEntries: 400, maxAgeSeconds: 60 * 60 * 24 * 90, purgeOnQuotaError: true },
+              cacheableResponse: { statuses: [200] },
             },
           },
         ],

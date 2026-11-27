@@ -1,7 +1,13 @@
 import { useEffect } from 'react';
 import type { ReaderTheme } from '../types';
-import type { Settings } from '../lib/settings';
+import type { LookupMode, Settings } from '../lib/settings';
 import { MinusIcon, PagesIcon, PlusIcon, ScrollIcon } from './icons';
+
+const LOOKUP_MODES: Array<{ id: LookupMode; label: string; help: string }> = [
+  { id: 'wiki', label: 'Wiki', help: 'Select text, then tap Look up for Wikipedia, a photo and a map.' },
+  { id: 'native', label: 'Safari', help: "Uses iPhone's built-in Look Up in the menu above your selection." },
+  { id: 'both', label: 'Both', help: "iPhone's Look Up menu above the words, and OwlReader's Wikipedia button below." },
+];
 
 const THEMES: Array<{ id: ReaderTheme; label: string; swatch: string; ink: string }> = [
   { id: 'light', label: 'Light', swatch: '#ffffff', ink: '#1c1917' },
@@ -90,6 +96,24 @@ export default function ReaderSettings({ open, settings, zoom, onSettings, onZoo
         <p className="mt-1.5 text-[12px] text-muted">
           {settings.flow === 'paginated' ? 'Swipe or tap the edges to turn pages.' : 'Scroll continuously, top to bottom.'}
         </p>
+
+        <Label>Look up</Label>
+        <div className="grid grid-cols-3 gap-1 rounded-xl bg-surface-2 p-1" role="radiogroup" aria-label="Look up with">
+          {LOOKUP_MODES.map((m) => (
+            <button
+              key={m.id}
+              role="radio"
+              aria-checked={settings.lookupMode === m.id}
+              onClick={() => onSettings({ lookupMode: m.id })}
+              className={`rounded-lg py-2 text-[14px] font-medium transition ${
+                settings.lookupMode === m.id ? 'bg-surface shadow-sm ring-1 ring-line' : 'text-muted'
+              }`}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+        <p className="mt-1.5 text-[12px] text-muted">{LOOKUP_MODES.find((m) => m.id === settings.lookupMode)?.help}</p>
 
         <Label>Zoom</Label>
         <Stepper

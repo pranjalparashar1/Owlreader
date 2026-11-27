@@ -17,7 +17,7 @@ interface Props {
 
 type View =
   | { status: 'loading'; query: string }
-  | { status: 'done'; response: LookupResponse }
+  | { status: 'done'; query: string; exactTitle?: boolean; response: LookupResponse }
   | { status: 'error'; query: string; exactTitle?: boolean; message: string; detail?: string };
 
 const ANIM_MS = 260;
@@ -64,13 +64,13 @@ export default function LookupDrawer({ request, orientation, onClose }: Props) {
     return () => window.clearTimeout(t);
   }, [open]);
 
-  async function run(query: string, opts: { exactTitle?: boolean; push?: boolean; retry?: boolean } = {}) {
+  async function run(query: string, opts: { exactTitle?: boolean; push?: boolean; retry?: boolean; refresh?: boolean } = {}) {
     const id = ++runId.current;
     const loading: View = { status: 'loading', query };
-    setStack((s) => (opts.push ? [...s, loading] : opts.retry ? [...s.slice(0, -1), loading] : [loading]));
+    setStack((s) => (opts.push ? [...s, loading] : opts.retry || opts.refresh ? [...s.slice(0, -1), loading] : [loading]));
     let next: View;
     try {
-      next = { status: 'done', response: await lookup(query, opts) };
+      next = { status: 'done', query, exactTitle: opts.exactTitle, response: await lookup(query, opts) };
     } catch (e) {
       next = {
         status: 'error',
@@ -309,6 +309,7 @@ export default function LookupDrawer({ request, orientation, onClose }: Props) {
               fromCache={current.response.fromCache}
               compact={!landscape}
               onMapOpen={() => setDetent('full')}
+              onRefresh={() => run(current.query, { exactTitle: current.exactTitle, refresh: true })}
               onPickCandidate={(title) => {
                 setInput(title);
                 run(title, { exactTitle: true, push: true });
