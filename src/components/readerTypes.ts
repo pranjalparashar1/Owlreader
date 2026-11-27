@@ -5,6 +5,8 @@ export interface ReaderHandle {
   next(): void;
   prev(): void;
   zoom(dir: 1 | -1 | 0): void; // 0 = fit width
+  /** Tiny render of a page for the scrubber preview; null if superseded or failed. */
+  renderThumbnail(page: number, widthPx: number): Promise<HTMLCanvasElement | null>;
 }
 
 export interface ReaderProps {

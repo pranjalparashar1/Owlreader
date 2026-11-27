@@ -27,6 +27,8 @@ Other static hosts (Vercel, Netlify) serve from `/`, so a plain `npm run build` 
 | Reader chrome (scrubber, centre-tap toggle) and the Aa settings menu (theme, Pages / Scroll, zoom %) | `src/components/ReaderShell.tsx`, `ReaderSettings.tsx` |
 | Crash screen (Reload / Back to Library) | `src/components/ErrorBoundary.tsx` |
 | PDF engine (native scroll-snap paging or vertical scroll, virtualized pages, pinch/button zoom, scanned-page banner) | `src/components/PdfReader.tsx` |
+| Live scrubber preview (throttled micro-thumbnails, 48-entry LRU, cancels superseded renders) | `ReaderShell.tsx`, `PdfReader.tsx` (`renderThumbnail`) |
+| Layout orientation (side sheet vs bottom sheet; screen orientation on phones, window shape for split view / desktop) | `src/hooks/useOrientation.ts` |
 | Text selection store (feeds the Look up pill) | `src/hooks/useTextSelection.ts` |
 | Lookup pill and drawer (side-sheet in landscape, bottom-sheet in portrait) | `src/components/LookupPill.tsx`, `LookupDrawer.tsx`, `LookupCard.tsx` |
 | Wikipedia pipeline (normalize → cache → summary → search fallback; 8 s timeout, 429/5xx shown as Retry) | `src/services/wikipedia.ts` |

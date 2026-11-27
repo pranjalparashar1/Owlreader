@@ -130,6 +130,34 @@ button {
   border: 1px solid var(--line);
 }
 
+/* Live scrubber preview card, anchored above the thumb */
+.scrub-preview {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  padding: 8px;
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--fg);
+  box-shadow: 0 10px 30px -6px rgb(0 0 0 / 0.4);
+  outline: 1px solid var(--line);
+  pointer-events: none;
+}
+.scrub-thumb {
+  aspect-ratio: 1 / 1.414;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--surface-2);
+  box-shadow: 0 0 0 1px var(--line);
+}
+.scrub-thumb:has(canvas) {
+  aspect-ratio: auto;
+}
+.scrub-thumb canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 /* PDF.js text layer (subset of pdfjs-dist/web/pdf_viewer.css) */
 .textLayer {
   position: absolute;
