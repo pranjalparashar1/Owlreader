@@ -24,9 +24,9 @@ Other static hosts (Vercel, Netlify) serve from `/`, so a plain `npm run build` 
 | Area | Where |
 | --- | --- |
 | Library (import, covers, progress, delete via ⋯ or long-press) | `src/components/LibraryView.tsx`, `src/services/importBook.ts` |
-| Reader chrome (theme, scrubber, font size / zoom, centre-tap toggle) | `src/components/ReaderShell.tsx` |
+| Reader chrome (scrubber, centre-tap toggle) and the Aa settings menu (theme, Pages / Scroll, text size / zoom) | `src/components/ReaderShell.tsx`, `ReaderSettings.tsx` |
 | EPUB engine ([foliate-js](https://github.com/johnfactotum/foliate-js), vendored) | `src/components/EpubReader.tsx`, `src/vendor/foliate-js/` |
-| PDF engine (pdf.js canvas + aligned `TextLayer`, pinch/button zoom, scanned-page banner) | `src/components/PdfReader.tsx` |
+| PDF engine (native scroll-snap paging or vertical scroll, virtualized pages, pinch/button zoom, scanned-page banner) | `src/components/PdfReader.tsx` |
 | Selection across the page and every EPUB section iframe | `src/hooks/useTextSelection.ts` |
 | Lookup pill and drawer (side-sheet in landscape, bottom-sheet in portrait) | `src/components/LookupPill.tsx`, `LookupDrawer.tsx`, `LookupCard.tsx` |
 | Wikipedia pipeline (normalize → cache → summary → search fallback) | `src/services/wikipedia.ts` |
@@ -36,6 +36,7 @@ Notes:
 
 - **Reading position** is saved through one debounced `onProgressChange` funnel in `ReaderShell`, and flushed when the app is backgrounded. EPUB stores a CFI; PDF stores page and zoom.
 - **Rotation** never resets the position: foliate-js re-paginates anchored to the current text range, and the PDF view keeps its page and its zoom relative to fit-width.
+- **Smooth scrolling on iPhone**: PDF paging is a CSS scroll-snap carousel and Scroll mode is a plain vertical scroller, so swipes and momentum run on the compositor. Only nearby pages hold a canvas, and pdf.js renders are queued for when scrolling stops. Pinch-zoom previews with a GPU transform and re-renders once at the end. Dark and sepia are drawn by pdf.js (`pageColors`) instead of a CSS filter.
 - **Lookup pill** fires on `pointerdown`, so the tap can't collapse the selection first, and sits in a fixed safe zone (bottom-centre portrait, bottom-right landscape) away from iOS's native callout.
 - **Offline**: the app shell (including the pdf.js worker) is precached by Workbox. Lookups are cached in IndexedDB, and Wikimedia images are runtime-cached, so repeat lookups work in Airplane Mode. Maps need a connection.
 - **Seams for v2**: `LookupCard` only takes a `LookupResult`, and `LookupDrawer` only takes a query, so an "On This Page" list can reuse both. All progress goes through `onProgressChange`.

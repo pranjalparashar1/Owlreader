@@ -9,13 +9,15 @@ interface Props {
   onPickCandidate: (title: string) => void;
   /** Shorter hero image, for the half-height portrait sheet. */
   compact?: boolean;
+  /** Called when the map opens, so a half-height sheet can grow to show it. */
+  onMapOpen?: () => void;
 }
 
 /**
  * Pure renderer for one lookup result. Deliberately knows nothing about text selection,
  * so a future "On This Page" drawer can render auto-extracted entities with it as-is.
  */
-export default function LookupCard({ result, fromCache, onPickCandidate, compact }: Props) {
+export default function LookupCard({ result, fromCache, onPickCandidate, compact, onMapOpen }: Props) {
   if (result.type === 'disambiguation') return <Candidates result={result} onPick={onPickCandidate} />;
   if (result.type === 'not_found') {
     return (
@@ -27,7 +29,7 @@ export default function LookupCard({ result, fromCache, onPickCandidate, compact
       </div>
     );
   }
-  return <Article result={result} fromCache={fromCache} compact={compact} />;
+  return <Article result={result} fromCache={fromCache} compact={compact} onMapOpen={onMapOpen} />;
 }
 
 function Candidates({ result, onPick }: { result: LookupResult; onPick: (title: string) => void }) {
@@ -73,7 +75,17 @@ function Hero({ src, portrait, compact }: { src: string; portrait?: boolean; com
   );
 }
 
-function Article({ result, fromCache, compact }: { result: LookupResult; fromCache: boolean; compact?: boolean }) {
+function Article({
+  result,
+  fromCache,
+  compact,
+  onMapOpen,
+}: {
+  result: LookupResult;
+  fromCache: boolean;
+  compact?: boolean;
+  onMapOpen?: () => void;
+}) {
   const [showMap, setShowMap] = useState(false);
   const coords = result.coordinates;
   return (
@@ -87,7 +99,10 @@ function Article({ result, fromCache, compact }: { result: LookupResult; fromCac
         {coords && (
           <div className="mt-4">
             <button
-              onClick={() => setShowMap((v) => !v)}
+              onClick={() => {
+                if (!showMap) onMapOpen?.();
+                setShowMap((v) => !v);
+              }}
               aria-expanded={showMap}
               className="inline-flex items-center gap-2 rounded-full bg-surface-2 px-3.5 py-2 text-[14px] font-medium ring-1 ring-line"
             >

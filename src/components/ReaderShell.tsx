@@ -1,13 +1,14 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import type { BookRecord, ReaderLocation, ReaderTheme, ReadingProgress } from '../types';
+import type { BookRecord, ReaderLocation, ReadingProgress } from '../types';
 import { getBookFile, touchBook, updateProgress } from '../db/libraryDb';
 import { clearTextSelection, useTextSelection } from '../hooks/useTextSelection';
 import { useOrientation } from '../hooks/useOrientation';
 import type { Settings } from '../lib/settings';
 import LookupPill from './LookupPill';
 import LookupDrawer, { type LookupRequest } from './LookupDrawer';
+import ReaderSettings from './ReaderSettings';
 import type { ReaderHandle } from './readerTypes';
-import { BackIcon, FitWidthIcon, MinusIcon, PagesIcon, PlusIcon, ScrollIcon } from './icons';
+import { BackIcon, FitWidthIcon } from './icons';
 
 interface Props {
   book: BookRecord;
@@ -16,11 +17,6 @@ interface Props {
   onBack: () => void;
 }
 
-const THEMES: Array<{ id: ReaderTheme; label: string; swatch: string; ink: string }> = [
-  { id: 'light', label: 'Light', swatch: '#ffffff', ink: '#1c1917' },
-  { id: 'sepia', label: 'Sepia', swatch: '#f4ecd8', ink: '#433422' },
-  { id: 'dark', label: 'Dark', swatch: '#121212', ink: '#e7e5e4' },
-];
 
 const SAVE_DEBOUNCE_MS = 600;
 
@@ -35,6 +31,7 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   const [location, setLocation] = useState<ReaderLocation | null>(null);
   const [scrub, setScrub] = useState<number | null>(null);
   const [lookupReq, setLookupReq] = useState<LookupRequest | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const readerRef = useRef<ReaderHandle>(null);
   const orientation = useOrientation();
   const selection = useTextSelection();
@@ -83,7 +80,10 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   }, [flush]);
 
   const onLocation = useCallback((loc: ReaderLocation) => setLocation(loc), []);
-  const onCenterTap = useCallback(() => setChrome((c) => !c), []);
+  const onCenterTap = useCallback(() => {
+    setChrome((c) => !c);
+    setSettingsOpen(false);
+  }, []);
   const onPageTurn = useCallback(() => setChrome(false), []);
 
   const openLookup = (text: string) => {
@@ -124,7 +124,7 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
     setScrub(null);
   };
 
-  const barBase = 'absolute inset-x-0 z-30 border-line bg-chrome backdrop-blur-md transition-transform duration-200 ease-out';
+  const barBase = 'absolute inset-x-0 z-30 border-line bg-chrome backdrop-blur-md will-change-transform';
 
   return (
     <div className="h-dvh-safe relative w-full overflow-hidden" style={{ background: 'var(--reader-bg)' }}>
@@ -132,9 +132,9 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
         <Suspense fallback={null}>
           {readerProps &&
             (isPdf ? (
-              <PdfReader ref={readerRef} {...readerProps} />
+              <PdfReader ref={readerRef} {...readerProps} flow={settings.flow} />
             ) : (
-              <EpubReader ref={readerRef} {...readerProps} fontPct={settings.fontPct} flow={settings.epubFlow} />
+              <EpubReader ref={readerRef} {...readerProps} fontPct={settings.fontPct} flow={settings.flow} />
             ))}
         </Suspense>
       </div>
@@ -151,7 +151,7 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
       {/* top bar */}
       <header
         className={`${barBase} pt-safe top-0 border-b`}
-        style={{ transform: chrome ? 'none' : 'translateY(-110%)' }}
+        style={{ transform: chrome ? 'none' : 'translateY(-110%)', visibility: chrome ? 'visible' : 'hidden', transition: barTransition(chrome) }}
         aria-hidden={!chrome}
       >
         <div className="px-safe flex h-12 items-center gap-2">
@@ -159,30 +159,23 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
             <BackIcon size={22} /> <span className="hidden sm:inline">Library</span>
           </button>
           <div className="min-w-0 flex-1 truncate text-center font-serif text-[15px] font-semibold">{book.title}</div>
-          <div className="flex items-center gap-1.5" role="radiogroup" aria-label="Theme">
-            {THEMES.map((t) => (
-              <button
-                key={t.id}
-                role="radio"
-                aria-checked={settings.theme === t.id}
-                aria-label={`${t.label} theme`}
-                onClick={() => onSettings({ theme: t.id })}
-                className={`flex h-8 w-8 items-center justify-center rounded-full text-[12px] font-semibold ring-1 transition ${
-                  settings.theme === t.id ? 'ring-2 ring-accent' : 'ring-line'
-                }`}
-                style={{ background: t.swatch, color: t.ink }}
-              >
-                Aa
-              </button>
-            ))}
-          </div>
+          <button
+            onClick={() => setSettingsOpen((o) => !o)}
+            aria-label="Reading settings"
+            aria-expanded={settingsOpen}
+            className={`flex h-9 items-center gap-1 rounded-full px-3 font-serif text-[17px] font-semibold ${
+              settingsOpen ? 'bg-surface-2' : 'active:bg-surface-2'
+            }`}
+          >
+            <span className="text-[13px]">A</span>A
+          </button>
         </div>
       </header>
 
       {/* bottom bar */}
       <footer
         className={`${barBase} pb-safe bottom-0 border-t`}
-        style={{ transform: chrome ? 'none' : 'translateY(110%)' }}
+        style={{ transform: chrome ? 'none' : 'translateY(110%)', visibility: chrome ? 'visible' : 'hidden', transition: barTransition(chrome) }}
         aria-hidden={!chrome}
       >
         <div className="px-safe pt-2 pb-2">
@@ -204,33 +197,10 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
           </div>
           <div className="mt-1 flex items-center justify-between gap-2">
             <div className="min-w-0 flex-1 truncate text-[12px] text-muted">{scrubLabel}</div>
-            {isPdf ? (
-              <div className="flex items-center gap-1">
-                <ToolButton label="Zoom out" onClick={() => readerRef.current?.zoom?.(-1)}>
-                  <MinusIcon size={18} />
-                </ToolButton>
-                <ToolButton label="Fit width" onClick={() => readerRef.current?.zoom?.(0)}>
-                  <FitWidthIcon size={18} />
-                </ToolButton>
-                <ToolButton label="Zoom in" onClick={() => readerRef.current?.zoom?.(1)}>
-                  <PlusIcon size={18} />
-                </ToolButton>
-              </div>
-            ) : (
-              <div className="flex items-center gap-1">
-                <ToolButton label="Smaller text" onClick={() => onSettings({ fontPct: Math.max(70, settings.fontPct - 10) })}>
-                  <span className="text-[13px] font-semibold">A−</span>
-                </ToolButton>
-                <ToolButton label="Larger text" onClick={() => onSettings({ fontPct: Math.min(220, settings.fontPct + 10) })}>
-                  <span className="text-[17px] font-semibold">A+</span>
-                </ToolButton>
-                <ToolButton
-                  label={settings.epubFlow === 'paginated' ? 'Switch to scrolling' : 'Switch to pages'}
-                  onClick={() => onSettings({ epubFlow: settings.epubFlow === 'paginated' ? 'scrolled' : 'paginated' })}
-                >
-                  {settings.epubFlow === 'paginated' ? <ScrollIcon size={18} /> : <PagesIcon size={18} />}
-                </ToolButton>
-              </div>
+            {isPdf && (
+              <ToolButton label="Fit width" onClick={() => readerRef.current?.zoom?.(0)}>
+                <FitWidthIcon size={18} />
+              </ToolButton>
             )}
             <div className="flex items-center gap-1">
               <ToolButton label="Previous page" onClick={() => readerRef.current?.prev()}>
@@ -247,10 +217,25 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
       {selection.text && !lookupReq && (
         <LookupPill text={selection.text} orientation={orientation} lift={chrome ? 76 : 0} onLookup={openLookup} />
       )}
+      <ReaderSettings
+        open={settingsOpen}
+        format={book.format}
+        settings={settings}
+        onSettings={onSettings}
+        onZoom={(dir) => readerRef.current?.zoom?.(dir)}
+        onClose={() => setSettingsOpen(false)}
+      />
       <LookupDrawer request={lookupReq} orientation={orientation} onClose={closeLookup} />
     </div>
   );
 }
+
+// Slide on the compositor; flip visibility only after sliding out so a hidden bar's
+// backdrop blur isn't recomputed on every frame of scrolling underneath it.
+const barTransition = (shown: boolean) =>
+  shown
+    ? 'transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s'
+    : 'transform 200ms ease-in, visibility 0s linear 200ms';
 
 function ToolButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
   return (
