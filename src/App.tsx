@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import type { BookRecord } from './types';
+import { isSupportedBook, type BookRecord } from './types';
 import { getBook } from './db/libraryDb';
 import { useSettings } from './lib/settings';
 import LibraryView from './components/LibraryView';
 import ReaderShell from './components/ReaderShell';
+import ErrorBoundary from './components/ErrorBoundary';
 
 const bookIdFromHash = () => /^#\/book\/(.+)$/.exec(location.hash)?.[1] ?? null;
 
@@ -25,8 +26,12 @@ export default function App() {
     // always re-read so we open at the latest saved position
     getBook(bookId).then((b) => {
       if (!alive) return;
-      if (b) setBook(b);
-      else history.replaceState(null, '', location.pathname);
+      if (b && isSupportedBook(b)) setBook(b);
+      else {
+        // unknown id, or a book from an older version this one can't open
+        history.replaceState(null, '', location.pathname);
+        setBookId(null);
+      }
     });
     return () => {
       alive = false;
@@ -48,7 +53,11 @@ export default function App() {
   };
 
   if (bookId && book?.id === bookId) {
-    return <ReaderShell key={book.id} book={book} settings={settings} onSettings={updateSettings} onBack={back} />;
+    return (
+      <ErrorBoundary key={book.id} onBack={back}>
+        <ReaderShell book={book} settings={settings} onSettings={updateSettings} onBack={back} />
+      </ErrorBoundary>
+    );
   }
   if (bookId) return <div className="h-dvh-safe bg-bg" />;
   return <LibraryView onOpen={open} />;

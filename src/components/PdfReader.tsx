@@ -301,7 +301,7 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
   useEffect(() => {
     if (!numPages) return;
     const fraction = numPages > 1 ? (page - 1) / (numPages - 1) : 1;
-    propsRef.current.onLocation({ fraction, page, pageCount: numPages, label: `Page ${page} of ${numPages}` });
+    propsRef.current.onLocation({ fraction, page, pageCount: numPages, label: `Page ${page} of ${numPages}`, zoom });
     propsRef.current.onProgressChange({
       pdfPage: page,
       pdfScale: zoom,
@@ -367,13 +367,12 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
   useImperativeHandle(
     ref,
     () => ({
-      goToFraction: (f) => goToPage(1 + f * (numPages - 1)),
       goToPage: (n) => goToPage(n),
       next,
       prev,
       zoom: (dir) => zoomAt(dir === 0 ? 1 : dir > 0 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP),
     }),
-    [goToPage, next, prev, numPages, zoom, zoomAt],
+    [goToPage, next, prev, zoom, zoomAt],
   );
 
   // ---- keyboard

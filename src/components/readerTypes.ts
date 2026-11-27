@@ -1,11 +1,10 @@
 import type { BookRecord, ReaderLocation, ReaderTheme, ReadingProgress } from '../types';
 
 export interface ReaderHandle {
-  goToFraction(fraction: number): void;
-  goToPage?(page: number): void;
+  goToPage(page: number): void; // 1-indexed
   next(): void;
   prev(): void;
-  zoom?(dir: 1 | -1 | 0): void; // PDF only: 0 = fit width
+  zoom(dir: 1 | -1 | 0): void; // 0 = fit width
 }
 
 export interface ReaderProps {

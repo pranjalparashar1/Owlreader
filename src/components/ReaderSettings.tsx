@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import type { BookFormat, ReaderTheme } from '../types';
+import type { ReaderTheme } from '../types';
 import type { Settings } from '../lib/settings';
 import { MinusIcon, PagesIcon, PlusIcon, ScrollIcon } from './icons';
 
@@ -11,16 +11,17 @@ const THEMES: Array<{ id: ReaderTheme; label: string; swatch: string; ink: strin
 
 interface Props {
   open: boolean;
-  format: BookFormat;
   settings: Settings;
+  /** Current PDF zoom as a multiplier of fit-width. */
+  zoom: number;
   onSettings: (patch: Partial<Settings>) => void;
-  /** PDF zoom: 1 = in, -1 = out, 0 = fit width */
+  /** 1 = in, -1 = out, 0 = fit width */
   onZoom: (dir: 1 | -1 | 0) => void;
   onClose: () => void;
 }
 
-/** Reading settings popover: theme, layout (Pages / Scroll), text size or zoom. */
-export default function ReaderSettings({ open, format, settings, onSettings, onZoom, onClose }: Props) {
+/** Reading settings popover: theme, layout (Pages / Scroll) and zoom. */
+export default function ReaderSettings({ open, settings, zoom, onSettings, onZoom, onClose }: Props) {
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -90,31 +91,17 @@ export default function ReaderSettings({ open, format, settings, onSettings, onZ
           {settings.flow === 'paginated' ? 'Swipe or tap the edges to turn pages.' : 'Scroll continuously, top to bottom.'}
         </p>
 
-        {format === 'epub' ? (
-          <>
-            <Label>Text size</Label>
-            <Stepper
-              value={`${settings.fontPct}%`}
-              onMinus={() => onSettings({ fontPct: Math.max(70, settings.fontPct - 10) })}
-              onPlus={() => onSettings({ fontPct: Math.min(220, settings.fontPct + 10) })}
-              minusLabel="Smaller text"
-              plusLabel="Larger text"
-            />
-          </>
-        ) : (
-          <>
-            <Label>Zoom</Label>
-            <Stepper
-              value="Fit width"
-              onValue={() => onZoom(0)}
-              onMinus={() => onZoom(-1)}
-              onPlus={() => onZoom(1)}
-              minusLabel="Zoom out"
-              plusLabel="Zoom in"
-            />
-            <p className="mt-1.5 text-[12px] text-muted">You can also pinch the page to zoom.</p>
-          </>
-        )}
+        <Label>Zoom</Label>
+        <Stepper
+          value={`${Math.round(zoom * 100)}%`}
+          onValue={() => onZoom(0)}
+          valueLabel={`Zoom ${Math.round(zoom * 100)}%. Reset to fit width`}
+          onMinus={() => onZoom(-1)}
+          onPlus={() => onZoom(1)}
+          minusLabel="Zoom out"
+          plusLabel="Zoom in"
+        />
+        <p className="mt-1.5 text-[12px] text-muted">Tap the percentage to fit the page width. You can also pinch to zoom.</p>
       </section>
     </div>
   );
@@ -127,6 +114,7 @@ function Label({ children }: { children: React.ReactNode }) {
 function Stepper(props: {
   value: string;
   onValue?: () => void;
+  valueLabel?: string;
   onMinus: () => void;
   onPlus: () => void;
   minusLabel: string;
@@ -139,7 +127,7 @@ function Stepper(props: {
         <MinusIcon size={18} />
       </button>
       {props.onValue ? (
-        <button className={`${btn} text-[14px] font-medium`} onClick={props.onValue}>
+        <button className={`${btn} text-[14px] font-medium tabular-nums`} onClick={props.onValue} aria-label={props.valueLabel}>
           {props.value}
         </button>
       ) : (

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { BookRecord } from '../types';
+import { isSupportedBook, type BookRecord } from '../types';
 import { deleteBook, listBooks } from '../db/libraryDb';
 import { importBook } from '../services/importBook';
 import { MoreIcon, OwlMark, PlusIcon, SearchIcon, TrashIcon } from './icons';
@@ -8,7 +8,7 @@ interface Props {
   onOpen: (book: BookRecord) => void;
 }
 
-const ACCEPT = '.epub,.pdf,application/pdf,application/epub+zip';
+const ACCEPT = '.pdf,application/pdf';
 const PALETTE = ['#7c2d12', '#1e3a5f', '#14532d', '#4c1d95', '#713f12', '#134e4a', '#831843', '#3f3f46'];
 
 function hash(s: string) {
@@ -50,7 +50,8 @@ function BookCard({ book, onOpen, onMenu }: { book: BookRecord; onOpen: () => vo
     }, 550);
   };
   const cancel = () => window.clearTimeout(pressTimer.current);
-  const pct = Math.round(book.progress.percentage || 0);
+  const supported = isSupportedBook(book);
+  const pct = supported ? Math.round(book.progress?.percentage || 0) : 0;
 
   return (
     <div className="group relative">
@@ -68,15 +69,14 @@ function BookCard({ book, onOpen, onMenu }: { book: BookRecord; onOpen: () => vo
         }}
         onClick={() => {
           if (longPressed.current) return;
-          onOpen();
+          // books saved by older versions in a format this one can't read: offer deletion instead
+          if (supported) onOpen();
+          else onMenu();
         }}
-        aria-label={`Open ${book.title}`}
+        aria-label={supported ? `Open ${book.title}` : `${book.title}, unsupported format. Delete`}
       >
-        <div className="relative aspect-[2/3] overflow-hidden rounded-md bg-surface-2 shadow-[0_1px_2px_rgb(0_0_0/0.12),0_6px_16px_-6px_rgb(0_0_0/0.25)] ring-1 ring-line transition-transform group-active:scale-[0.98]">
+        <div className={`relative aspect-[2/3] overflow-hidden ${supported ? '' : 'opacity-50 grayscale'} rounded-md bg-surface-2 shadow-[0_1px_2px_rgb(0_0_0/0.12),0_6px_16px_-6px_rgb(0_0_0/0.25)] ring-1 ring-line transition-transform group-active:scale-[0.98]`}>
           <Cover book={book} />
-          <span className="absolute top-2 left-2 rounded bg-black/65 px-1.5 py-0.5 text-[10px] font-semibold tracking-wider text-white uppercase backdrop-blur-sm">
-            {book.format}
-          </span>
           {pct > 0 && (
             <div className="absolute inset-x-0 bottom-0 h-1 bg-black/25">
               <div className="h-full bg-accent" style={{ width: `${pct}%` }} />
@@ -86,8 +86,8 @@ function BookCard({ book, onOpen, onMenu }: { book: BookRecord; onOpen: () => vo
         <div className="mt-2 pr-7">
           <div className="text-[14px] leading-tight font-medium line-clamp-2">{book.title}</div>
           <div className="mt-0.5 text-[12px] text-muted truncate">
-            {pct > 0 ? `${pct}% read` : 'Not started'}
-            {book.author ? ` · ${book.author}` : ''}
+            {!supported ? 'Unsupported · tap to delete' : pct > 0 ? `${pct}% read` : 'Not started'}
+            {supported && book.author ? ` · ${book.author}` : ''}
           </div>
         </div>
       </button>
@@ -119,7 +119,10 @@ function ConfirmDelete({ book, onCancel, onConfirm }: { book: BookRecord; onCanc
       >
         <h2 id="del-title" className="text-[17px] font-semibold">Delete this book?</h2>
         <p className="mt-1.5 text-[14px] text-muted">
-          “{book.title}” and your reading position will be removed from this device. {formatSize(book.fileSize)} will be freed.
+          {isSupportedBook(book)
+            ? `“${book.title}” and your reading position will be removed from this device.`
+            : `OwlReader now opens PDFs only, so “${book.title}” (saved by an earlier version) can't be opened.`}{' '}
+          {formatSize(book.fileSize || 0)} will be freed.
         </p>
         <div className="mt-5 flex gap-2">
           <button onClick={onCancel} className="flex-1 rounded-xl bg-surface-2 py-3 text-[15px] font-medium">
@@ -173,7 +176,7 @@ export default function LibraryView({ onOpen }: Props) {
 
   const importButton = (
     <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-full bg-fg px-4 py-2 text-[14px] font-semibold text-bg active:opacity-80">
-      <PlusIcon size={16} strokeWidth={2.4} /> Import Book
+      <PlusIcon size={16} strokeWidth={2.4} /> Import PDF
       <input ref={inputRef} type="file" accept={ACCEPT} multiple className="sr-only" onChange={(e) => onFiles(e.target.files)} />
     </label>
   );
@@ -215,7 +218,7 @@ export default function LibraryView({ onOpen }: Props) {
             </div>
             <h2 className="font-serif text-[22px] font-semibold">Your shelf is empty</h2>
             <p className="mt-2 text-[15px] leading-relaxed text-muted">
-              Import an EPUB or a PDF from Files. Everything stays on this device.
+              Import a PDF from Files. Everything stays on this device.
             </p>
             <div className="mt-6">{importButton}</div>
             <div className="mt-10 flex items-start gap-3 rounded-2xl bg-surface p-4 text-left ring-1 ring-line">
