@@ -49,9 +49,7 @@ export default function LookupPill({ text, orientation, lift = 0, onLookup }: Pr
         aria-label={`Look up ${text}`}
       >
         <SearchIcon size={18} strokeWidth={2.2} className="shrink-0 text-accent" />
-        <span className="truncate">
-          Look up “{truncateLabel(text)}”
-        </span>
+        <span className="truncate">Look up “{truncateLabel(text)}”</span>
       </button>
     </div>
   );

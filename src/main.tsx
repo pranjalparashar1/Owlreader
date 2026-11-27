@@ -1,11 +1,12 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { registerSW } from 'virtual:pwa-register';
 import App from './App';
 import ErrorBoundary from './components/ErrorBoundary';
+import UpdateToast from './components/UpdateToast';
+import { initPwaUpdates } from './lib/pwaUpdate';
 import './index.css';
 
-registerSW({ immediate: true });
+initPwaUpdates();
 
 // 1.4 and earlier cached Wikipedia images as opaque responses, which iOS pads heavily against
 // the storage quota. 1.5 caches CORS responses in 'wiki-images-v2'; drop the old cache.
@@ -20,5 +21,6 @@ createRoot(document.getElementById('root')!).render(
     <ErrorBoundary>
       <App />
     </ErrorBoundary>
+    <UpdateToast />
   </StrictMode>,
 );

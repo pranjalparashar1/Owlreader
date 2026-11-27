@@ -38,13 +38,16 @@ export class ServiceError extends Error {
 
 /** Trim, collapse whitespace, strip surrounding quotes/punctuation and a trailing possessive. */
 export function normalizeQuery(raw: string): string {
-  let q = raw.replace(/[\s ]+/g, ' ').trim();
+  let q = raw.replace(/[\s\u00a0]+/g, ' ').trim();
   // hyphenated line breaks from PDFs: "Blen- heim" -> "Blenheim"
   q = q.replace(/(\p{L})- (\p{Ll})/gu, '$1$2');
   const edge = /^[\s"'“”‘’«»‹›()[\]{}<>.,;:!?¿¡…–—*_~`]+|[\s"'“”‘’«»‹›()[\]{}<>.,;:!?¿¡…–—*_~`]+$/gu;
   for (let i = 0; i < 3; i++) {
     const before = q;
-    q = q.replace(edge, '').replace(/['’]s$/iu, '').replace(/(\p{L})['’]$/u, '$1');
+    q = q
+      .replace(edge, '')
+      .replace(/['’]s$/iu, '')
+      .replace(/(\p{L})['’]$/u, '$1');
     if (q === before) break;
   }
   return q.trim();
@@ -125,7 +128,7 @@ async function fetchJson(url: string): Promise<{ status: number; data?: unknown 
 function pickImage(d: SummaryJson) {
   const orig = d.originalimage;
   const thumb = d.thumbnail;
-  const img = orig && orig.width <= 1600 ? orig : thumb ?? orig;
+  const img = orig && orig.width <= 1600 ? orig : (thumb ?? orig);
   if (!img) return {};
   let src = img.source;
   // Upscale the 320px REST thumbnail to something crisp on retina screens.
@@ -141,17 +144,18 @@ async function fetchSummary(title: string): Promise<SummaryJson | null> {
 
 async function searchCandidates(query: string, exclude?: string): Promise<LookupCandidate[]> {
   const url =
-    `${ACTION}?action=query&list=search&srsearch=${encodeURIComponent(query)}` +
-    `&srlimit=6&srprop=snippet&format=json&origin=*`;
+    `${ACTION}?action=query&list=search&srsearch=${encodeURIComponent(query)}` + `&srlimit=6&srprop=snippet&format=json&origin=*`;
   const { data } = await fetchJson(url);
   const hits = (data as { query?: { search?: Array<{ title: string; snippet: string }> } })?.query?.search ?? [];
-  return hits
-    .filter((h) => !/\(disambiguation\)$/i.test(h.title))
-    // the disambiguation page itself often comes back as a hit ("Mercury" for "mercury");
-    // tapping it would just show this same list again, which looks like the tap did nothing
-    .filter((h) => !exclude || h.title.toLowerCase() !== exclude)
-    .slice(0, 4)
-    .map((h) => ({ title: h.title, snippet: stripHtml(h.snippet) }));
+  return (
+    hits
+      .filter((h) => !/\(disambiguation\)$/i.test(h.title))
+      // the disambiguation page itself often comes back as a hit ("Mercury" for "mercury");
+      // tapping it would just show this same list again, which looks like the tap did nothing
+      .filter((h) => !exclude || h.title.toLowerCase() !== exclude)
+      .slice(0, 4)
+      .map((h) => ({ title: h.title, snippet: stripHtml(h.snippet) }))
+  );
 }
 
 function toStandard(query: string, d: SummaryJson): LookupResult {
@@ -207,7 +211,7 @@ async function fetchAndCache(query: string, key: string): Promise<LookupResponse
   }
 
   const isDisambig = summary?.type === 'disambiguation';
-  const candidates = await searchCandidates(query, isDisambig ? summary?.title?.toLowerCase() ?? key : undefined);
+  const candidates = await searchCandidates(query, isDisambig ? (summary?.title?.toLowerCase() ?? key) : undefined);
 
   // A lowercase or slightly-off query ("blenheim palace") 404s on the REST API but its top
   // search hit is an exact match: resolve it directly instead of showing a one-item list.

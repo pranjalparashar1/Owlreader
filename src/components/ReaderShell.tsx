@@ -121,7 +121,7 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   const scrubValue = scrub ?? location?.page ?? 1;
   const scrubMax = Math.max(1, pageCount);
   const fill = scrubMax > 1 ? ((scrubValue - 1) / (scrubMax - 1)) * 100 : 0;
-  const scrubLabel = scrub !== null ? `Page ${scrub} of ${pageCount}` : location?.label ?? '';
+  const scrubLabel = scrub !== null ? `Page ${scrub} of ${pageCount}` : (location?.label ?? '');
 
   // ---- live scrubber preview: throttled micro-thumbnail of the page under the thumb. Only the
   // newest request may paint; the reader cancels superseded renders, so fast drags never queue.
@@ -172,9 +172,7 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
       style={{ background: 'var(--reader-bg)' }}
     >
       <div className="absolute inset-0">
-        <Suspense fallback={null}>
-          {readerProps && <PdfReader ref={readerRef} {...readerProps} flow={settings.flow} />}
-        </Suspense>
+        <Suspense fallback={null}>{readerProps && <PdfReader ref={readerRef} {...readerProps} flow={settings.flow} />}</Suspense>
       </div>
 
       {error && (
@@ -189,11 +187,19 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
       {/* top bar */}
       <header
         className={`${barBase} pt-safe-bar top-0 border-b`}
-        style={{ transform: chrome ? 'none' : 'translateY(-110%)', visibility: chrome ? 'visible' : 'hidden', transition: barTransition(chrome) }}
+        style={{
+          transform: chrome ? 'none' : 'translateY(-110%)',
+          visibility: chrome ? 'visible' : 'hidden',
+          transition: barTransition(chrome),
+        }}
         aria-hidden={!chrome}
       >
         <div className="px-safe flex h-12 items-center gap-2">
-          <button onClick={onBack} className="-ml-2 flex items-center gap-0.5 rounded-full py-2 pr-3 pl-1 text-[15px] active:bg-surface-2" aria-label="Back to Library">
+          <button
+            onClick={onBack}
+            className="-ml-2 flex items-center gap-0.5 rounded-full py-2 pr-3 pl-1 text-[15px] active:bg-surface-2"
+            aria-label="Back to Library"
+          >
             <BackIcon size={22} /> <span className="hidden sm:inline">Library</span>
           </button>
           <div className="min-w-0 flex-1 truncate text-center font-serif text-[15px] font-semibold">{book.title}</div>
@@ -213,7 +219,11 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
       {/* bottom bar */}
       <footer
         className={`${barBase} pb-safe bottom-0 border-t`}
-        style={{ transform: chrome ? 'none' : 'translateY(110%)', visibility: chrome ? 'visible' : 'hidden', transition: barTransition(chrome) }}
+        style={{
+          transform: chrome ? 'none' : 'translateY(110%)',
+          visibility: chrome ? 'visible' : 'hidden',
+          transition: barTransition(chrome),
+        }}
         aria-hidden={!chrome}
       >
         <div className="px-safe pt-2 pb-2">
@@ -288,9 +298,7 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
 // Slide on the compositor; flip visibility only after sliding out so a hidden bar
 // isn't composited on every frame of scrolling underneath it.
 const barTransition = (shown: boolean) =>
-  shown
-    ? 'transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s'
-    : 'transform 200ms ease-in, visibility 0s linear 200ms';
+  shown ? 'transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s' : 'transform 200ms ease-in, visibility 0s linear 200ms';
 
 function ToolButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
   return (

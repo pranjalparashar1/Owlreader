@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { isSupportedBook, type BookRecord } from '../types';
 import { deleteBook, listBooks } from '../db/libraryDb';
 import { importBook } from '../services/importBook';
-import { MoreIcon, OwlMark, PlusIcon, SearchIcon, TrashIcon } from './icons';
+import StorageSheet from './StorageSheet';
+import { useFocusTrap } from '../hooks/useFocusTrap';
+import { MoreIcon, OwlMark, PlusIcon, SearchIcon, StorageIcon, TrashIcon } from './icons';
 
 interface Props {
   onOpen: (book: BookRecord) => void;
@@ -75,7 +77,9 @@ function BookCard({ book, onOpen, onMenu }: { book: BookRecord; onOpen: () => vo
         }}
         aria-label={supported ? `Open ${book.title}` : `${book.title}, unsupported format. Delete`}
       >
-        <div className={`relative aspect-[2/3] overflow-hidden ${supported ? '' : 'opacity-50 grayscale'} rounded-md bg-surface-2 shadow-[0_1px_2px_rgb(0_0_0/0.12),0_6px_16px_-6px_rgb(0_0_0/0.25)] ring-1 ring-line transition-transform group-active:scale-[0.98]`}>
+        <div
+          className={`relative aspect-[2/3] overflow-hidden ${supported ? '' : 'opacity-50 grayscale'} rounded-md bg-surface-2 shadow-[0_1px_2px_rgb(0_0_0/0.12),0_6px_16px_-6px_rgb(0_0_0/0.25)] ring-1 ring-line transition-transform group-active:scale-[0.98]`}
+        >
           <Cover book={book} />
           {pct > 0 && (
             <div className="absolute inset-x-0 bottom-0 h-1 bg-black/25">
@@ -108,16 +112,21 @@ function ConfirmDelete({ book, onCancel, onConfirm }: { book: BookRecord; onCanc
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onCancel]);
+  const ref = useRef<HTMLDivElement>(null);
+  useFocusTrap(ref, true);
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center" onClick={onCancel}>
       <div
+        ref={ref}
         role="dialog"
         aria-modal="true"
         aria-labelledby="del-title"
         className="pb-safe w-full max-w-sm rounded-2xl bg-surface p-5 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 id="del-title" className="text-[17px] font-semibold">Delete this book?</h2>
+        <h2 id="del-title" className="text-[17px] font-semibold">
+          Delete this book?
+        </h2>
         <p className="mt-1.5 text-[14px] text-muted">
           {isSupportedBook(book)
             ? `“${book.title}” and your reading position will be removed from this device.`
@@ -128,7 +137,10 @@ function ConfirmDelete({ book, onCancel, onConfirm }: { book: BookRecord; onCanc
           <button onClick={onCancel} className="flex-1 rounded-xl bg-surface-2 py-3 text-[15px] font-medium">
             Cancel
           </button>
-          <button onClick={onConfirm} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-red-600 py-3 text-[15px] font-semibold text-white">
+          <button
+            onClick={onConfirm}
+            className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-red-600 py-3 text-[15px] font-semibold text-white"
+          >
             <TrashIcon size={18} /> Delete
           </button>
         </div>
@@ -142,9 +154,13 @@ export default function LibraryView({ onOpen }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<BookRecord | null>(null);
+  const [storageOpen, setStorageOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const refresh = () => listBooks().then(setBooks).catch(() => setBooks([]));
+  const refresh = () =>
+    listBooks()
+      .then(setBooks)
+      .catch(() => setBooks([]));
   useEffect(() => {
     refresh();
   }, []);
@@ -191,7 +207,17 @@ export default function LibraryView({ onOpen }: Props) {
             <OwlMark size={28} />
             <h1 className="font-serif text-[21px] font-semibold tracking-tight">OwlReader</h1>
           </div>
-          {importButton}
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setStorageOpen(true)}
+              className="rounded-full p-2 text-muted active:bg-surface-2"
+              aria-label="Storage"
+              title="Storage"
+            >
+              <StorageIcon size={20} />
+            </button>
+            {importButton}
+          </div>
         </div>
       </header>
 
@@ -226,8 +252,8 @@ export default function LibraryView({ onOpen }: Props) {
                 <SearchIcon size={18} />
               </div>
               <p className="text-[13.5px] leading-relaxed text-muted">
-                <span className="font-semibold text-fg">Select any name or place</span> while reading, then tap the
-                Look up button for a photo, a short summary and a map, without leaving your book.
+                <span className="font-semibold text-fg">Select any name or place</span> while reading, then tap the Look up button
+                for a photo, a short summary and a map, without leaving your book.
               </p>
             </div>
           </div>
@@ -245,9 +271,8 @@ export default function LibraryView({ onOpen }: Props) {
         )}
       </main>
 
-      {pendingDelete && (
-        <ConfirmDelete book={pendingDelete} onCancel={() => setPendingDelete(null)} onConfirm={confirmDelete} />
-      )}
+      {storageOpen && <StorageSheet onClose={() => setStorageOpen(false)} />}
+      {pendingDelete && <ConfirmDelete book={pendingDelete} onCancel={() => setPendingDelete(null)} onConfirm={confirmDelete} />}
     </div>
   );
 }
