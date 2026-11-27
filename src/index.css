@@ -25,7 +25,7 @@
   --line: rgb(28 25 23 / 0.1);
   --accent: #b45309;
   --accent-fg: #ffffff;
-  --chrome: rgb(250 247 242 / 0.94);
+  --chrome: #faf7f2;
   --reader-bg: #ffffff;
   color-scheme: light;
 }
@@ -38,7 +38,7 @@
   --line: rgb(59 45 28 / 0.14);
   --accent: #9a4a0c;
   --accent-fg: #fff8ec;
-  --chrome: rgb(239 229 207 / 0.95);
+  --chrome: #efe5cf;
   --reader-bg: #f4ecd8;
   color-scheme: light;
 }
@@ -51,7 +51,7 @@
   --line: rgb(231 229 228 / 0.12);
   --accent: #f59e0b;
   --accent-fg: #1c1917;
-  --chrome: rgb(22 21 20 / 0.94);
+  --chrome: #161514;
   --reader-bg: #121212;
   color-scheme: dark;
 }
@@ -216,12 +216,17 @@ button {
   flex: 0 0 100%;
   width: 100%;
   height: 100%;
-  overflow: auto;
+  /* Every overflow:auto box is its own native scroll view on iOS; hundreds of them make the
+     carousel stutter. Only the pages near the current one (.is-live) can scroll (zoomed pan). */
+  overflow: hidden;
   scroll-snap-align: start;
   scroll-snap-stop: always;
   overscroll-behavior: auto;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
+}
+.pdf-slot.is-live {
+  overflow: auto;
 }
 .pdf-slot::-webkit-scrollbar {
   display: none;
@@ -232,7 +237,7 @@ button {
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  padding: calc(8px + env(safe-area-inset-top)) 8px calc(8px + env(safe-area-inset-bottom));
+  padding: calc(8px + env(safe-area-inset-top) * 1.25) 8px calc(8px + env(safe-area-inset-bottom));
   box-sizing: border-box;
 }
 .pdf-track {
@@ -241,7 +246,7 @@ button {
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  padding: calc(8px + env(safe-area-inset-top)) 8px calc(8px + env(safe-area-inset-bottom));
+  padding: calc(8px + env(safe-area-inset-top) * 1.25) 8px calc(8px + env(safe-area-inset-bottom));
   box-sizing: border-box;
   min-height: 100%;
 }
@@ -257,6 +262,25 @@ button {
   width: 100%;
   height: 100%;
   pointer-events: none;
+}
+.pdf-theme-dark .pdf-canvas {
+  filter: invert(0.88) hue-rotate(180deg);
+}
+.pdf-theme-sepia .pdf-canvas {
+  filter: sepia(0.35) brightness(0.97);
+}
+
+/* iOS 26 draws a progressive blur over whatever sits under the status bar (and a little
+   below it). Keep that band a solid colour, and keep bar content clear of it. */
+.status-shield {
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: calc(env(safe-area-inset-top) * 1.25);
+  z-index: 25;
+  pointer-events: none;
+}
+.pt-safe-bar {
+  padding-top: calc(env(safe-area-inset-top) * 1.25);
 }
 
 @keyframes pill-in {

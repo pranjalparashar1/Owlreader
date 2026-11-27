@@ -96,7 +96,7 @@ async function fetchSummary(title: string): Promise<SummaryJson | null> {
   return data as SummaryJson;
 }
 
-async function searchCandidates(query: string): Promise<LookupCandidate[]> {
+async function searchCandidates(query: string, exclude?: string): Promise<LookupCandidate[]> {
   const url =
     `${ACTION}?action=query&list=search&srsearch=${encodeURIComponent(query)}` +
     `&srlimit=6&srprop=snippet&format=json&origin=*`;
@@ -104,6 +104,9 @@ async function searchCandidates(query: string): Promise<LookupCandidate[]> {
   const hits = (data as { query?: { search?: Array<{ title: string; snippet: string }> } })?.query?.search ?? [];
   return hits
     .filter((h) => !/\(disambiguation\)$/i.test(h.title))
+    // the disambiguation page itself often comes back as a hit ("Mercury" for "mercury");
+    // tapping it would just show this same list again, which looks like the tap did nothing
+    .filter((h) => !exclude || h.title.toLowerCase() !== exclude)
     .slice(0, 4)
     .map((h) => ({ title: h.title, snippet: stripHtml(h.snippet) }));
 }
@@ -133,7 +136,14 @@ export async function lookup(raw: string, opts: { exactTitle?: boolean } = {}): 
   const key = query.toLowerCase();
 
   const cached = await getCachedLookup(key).catch(() => undefined);
-  if (cached) return { result: cached, fromCache: true };
+  if (cached) {
+    // lists cached before 1.1.1 may still include the disambiguation page itself
+    if (cached.type === 'disambiguation' && cached.candidates) {
+      const self = cached.title.toLowerCase();
+      cached.candidates = cached.candidates.filter((c) => c.title.toLowerCase() !== self && c.title.toLowerCase() !== key);
+    }
+    return { result: cached, fromCache: true };
+  }
 
   const summary = await fetchSummary(query);
   if (summary && summary.type !== 'disambiguation') {
@@ -142,7 +152,8 @@ export async function lookup(raw: string, opts: { exactTitle?: boolean } = {}): 
     return { result, fromCache: false };
   }
 
-  const candidates = await searchCandidates(query);
+  const isDisambig = summary?.type === 'disambiguation';
+  const candidates = await searchCandidates(query, isDisambig ? summary?.title?.toLowerCase() ?? key : undefined);
 
   // A lowercase or slightly-off query ("blenheim palace") 404s on the REST API but its top
   // search hit is an exact match: resolve it directly instead of showing a one-item list.
