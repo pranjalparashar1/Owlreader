@@ -196,6 +196,7 @@ button {
   -webkit-overflow-scrolling: touch;
   touch-action: pan-x pan-y; /* no browser pinch-zoom; our pinch handler zooms the PDF */
   scrollbar-width: none;
+  overflow-anchor: none; /* we restore position ourselves; browser anchoring would double-correct */
 }
 .pdf-scroller::-webkit-scrollbar {
   display: none;
@@ -228,6 +229,11 @@ button {
 .pdf-slot.is-live {
   overflow: auto;
 }
+/* Off-screen slots skip layout and paint entirely (their box size is fixed by the carousel). */
+.pdf-slot:not(.is-live) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 100vw auto 100dvh;
+}
 .pdf-slot::-webkit-scrollbar {
   display: none;
 }
@@ -245,7 +251,6 @@ button {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
   padding: calc(8px + env(safe-area-inset-top) * 1.25) 8px calc(8px + env(safe-area-inset-bottom));
   box-sizing: border-box;
   min-height: 100%;
@@ -256,18 +261,23 @@ button {
   box-shadow: 0 1px 3px rgb(0 0 0 / 0.2);
   contain: layout paint;
 }
+.pdf-scrolled .pdf-page {
+  margin-bottom: 10px; /* GAP in PdfReader.tsx: spacer heights assume it */
+}
+/* Stand-ins for unmounted pages in Scroll mode, drawn as a column of blank pages. */
+.pdf-spacer {
+  flex: none;
+  align-self: stretch;
+  background-repeat: no-repeat;
+  background-position: center top;
+}
+/* Plain opaque bitmap: dark/sepia are baked in when the page renders, so no CSS filter here. */
 .pdf-canvas {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   pointer-events: none;
-}
-.pdf-theme-dark .pdf-canvas {
-  filter: invert(0.88) hue-rotate(180deg);
-}
-.pdf-theme-sepia .pdf-canvas {
-  filter: sepia(0.35) brightness(0.97);
 }
 
 /* iOS 26 draws a progressive blur over whatever sits under the status bar (and a little

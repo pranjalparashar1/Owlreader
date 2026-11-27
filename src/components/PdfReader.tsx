@@ -9,46 +9,92 @@ const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 1.25;
 const PAD = 8; // breathing room around a page at fit-width
-const MAX_CANVAS_PIXELS = 6_000_000; // keeps 3–5 live canvases well under iOS Safari's canvas memory cap
+const GAP = 10; // between pages in Scroll mode (matches .pdf-scrolled .pdf-page margin)
+/** First pass: fast to draw and cheap to upload to the GPU while the reader is moving. */
+const FIRST_PASS_PIXELS = 2_200_000;
+const FIRST_PASS_MAX_DPR = 2;
+/** Crispness pass for the current page only, once the reader has settled on it. */
+const SHARP_PASS_PIXELS = 4_500_000;
 const SCROLL_IDLE_MS = 140;
+const QUIET_MS = 300; // idle time before the sharp pass and page-size probing run
+const PROBE_WINDOW = 20; // real page sizes are fetched for current ± this many pages
+const PROBE_BATCH = 4;
+const MOUNT_AROUND = 8; // Scroll mode keeps current ± this many page boxes in the DOM
 
 const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
 
 /**
- * Dark and sepia are a GPU CSS filter on each page canvas (see index.css). pdf.js's own
- * `pageColors` relies on canvas `ctx.filter`, which iOS Safari ignores, so pages stayed white.
- * Box colour shown before a page has rendered, matching the filtered page:
+ * Dark and sepia are baked into each page bitmap with canvas compositing (see `tintCanvas`),
+ * so the compositor only ever scrolls plain opaque bitmaps. A CSS `filter` forced iOS to
+ * re-filter every page on every frame; pdf.js's `pageColors` needs `ctx.filter`, which iOS
+ * Safari lacks. Box colour shown before a page has rendered, matching the tinted page:
  */
 const PAGE_BG: Record<ReaderTheme, string> = { light: '#ffffff', sepia: '#f6eedd', dark: '#1f1f1f' };
 
 type Size = { w: number; h: number };
+type Task = () => Promise<void>;
 
-/**
- * One render at a time, nearest-to-current page first, and never while the user is
- * scrolling: pdf.js draws on the main thread, so rendering mid-gesture is what makes
- * native scrolling stutter on iPhone.
- */
 /** Text-layer tasks sort just after their page's canvas (same distance, canvas first). */
 const textKey = (num: number) => num + 0.5;
 
+/**
+ * One pdf.js job at a time, and never while the user is scrolling: pdf.js draws on the main
+ * thread, so rendering mid-gesture is what makes native scrolling stutter on iPhone.
+ * - `request`: first-pass canvases and text layers, nearest-to-current page first.
+ * - `requestIdle`: sharp passes and page-size probes. They run only when nothing else is queued
+ *   and the reader has been still for QUIET_MS, lowest `prio` first.
+ */
 class RenderScheduler {
-  private queue = new Map<number, () => Promise<void>>();
+  private queue = new Map<number, Task>();
+  private idle = new Map<string, { prio: number; task: Task }>();
   private running = false;
-  scrolling = false;
+  private timer: number | undefined;
+  private quietSince = performance.now();
+  private _scrolling = false;
   current = 1;
-  request(num: number, task: () => Promise<void>) {
+  get scrolling() {
+    return this._scrolling;
+  }
+  set scrolling(v: boolean) {
+    this._scrolling = v;
+    if (!v) this.quietSince = performance.now();
+  }
+  request(num: number, task: Task) {
     this.queue.set(num, task);
     this.pump();
   }
   cancel(num: number) {
     this.queue.delete(num);
   }
+  requestIdle(key: string, prio: number, task: Task) {
+    this.idle.set(key, { prio, task });
+    this.pump();
+  }
+  cancelIdle(key: string) {
+    this.idle.delete(key);
+  }
   pump = () => {
-    if (this.running || this.scrolling || this.queue.size === 0) return;
-    let best = -1;
-    for (const n of this.queue.keys()) if (best < 0 || Math.abs(n - this.current) < Math.abs(best - this.current)) best = n;
-    const task = this.queue.get(best)!;
-    this.queue.delete(best);
+    window.clearTimeout(this.timer);
+    if (this.running || this._scrolling) return;
+    let task: Task | undefined;
+    if (this.queue.size) {
+      let best = -1;
+      for (const n of this.queue.keys()) if (best < 0 || Math.abs(n - this.current) < Math.abs(best - this.current)) best = n;
+      task = this.queue.get(best)!;
+      this.queue.delete(best);
+    } else if (this.idle.size) {
+      const wait = QUIET_MS - (performance.now() - this.quietSince);
+      if (wait > 0) {
+        this.timer = window.setTimeout(this.pump, wait + 5);
+        return;
+      }
+      let bestKey = '';
+      let bestPrio = Infinity;
+      for (const [k, v] of this.idle) if (v.prio < bestPrio) [bestKey, bestPrio] = [k, v.prio];
+      task = this.idle.get(bestKey)!.task;
+      this.idle.delete(bestKey);
+    }
+    if (!task) return;
     this.running = true;
     task()
       .catch(() => {})
@@ -60,6 +106,43 @@ class RenderScheduler {
   };
 }
 
+/**
+ * Bakes the reading theme into a rendered page. Dark ≈ CSS `invert(0.88) hue-rotate(180deg)`:
+ * invert, pull the contrast in, then put the original hues back with the `hue` blend mode
+ * (photos keep their colours, only lightness flips). Sepia multiplies by the paper colour.
+ * Every step is a GPU canvas op, no `ctx.filter` and no pixel readback.
+ */
+function tintCanvas(canvas: HTMLCanvasElement, theme: ReaderTheme): HTMLCanvasElement {
+  if (theme === 'light') return canvas;
+  const { width: w, height: h } = canvas;
+  if (theme === 'sepia') {
+    const ctx = canvas.getContext('2d')!;
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.fillStyle = PAGE_BG.sepia;
+    ctx.fillRect(0, 0, w, h);
+    ctx.globalCompositeOperation = 'source-over';
+    return canvas;
+  }
+  const out = document.createElement('canvas');
+  out.width = w;
+  out.height = h;
+  const ctx = out.getContext('2d')!;
+  ctx.drawImage(canvas, 0, 0);
+  ctx.globalCompositeOperation = 'difference';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, w, h); // invert
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 0.24;
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, w, h); // white→#1f1f1f, black→#e0e0e0 (the 0.88 in invert(0.88))
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'hue';
+  ctx.drawImage(canvas, 0, 0); // original hue, inverted lightness
+  ctx.globalCompositeOperation = 'source-over';
+  canvas.width = 0; // free the untinted bitmap
+  return out;
+}
+
 interface Props extends ReaderProps {
   flow: 'paginated' | 'scrolled';
 }
@@ -68,8 +151,10 @@ interface Props extends ReaderProps {
  * PDF reader built on the browser's own scrolling so iOS does the work on the compositor:
  * - Pages mode: a horizontal CSS scroll-snap carousel (native swipe, momentum and snap).
  * - Scroll mode: one vertical column of pages with native momentum scrolling.
- * Pages are virtualized (only nearby pages hold a canvas). Each page has a canvas rendered
- * at devicePixelRatio and PDF.js's TextLayer on top, so native text selection works.
+ * Only nearby pages hold a canvas, and in Scroll mode only ~17 page boxes exist at all (spacers
+ * stand in for the rest). Each live page has a canvas (a fast first pass, then a sharp pass for
+ * the current page once the reader settles) and PDF.js's TextLayer on top for native selection.
+ * Page sizes are fetched lazily around the current page instead of for the whole document.
  * Zoom is a multiplier of fit-to-width, so rotating keeps the same page and relative zoom.
  */
 const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref) {
@@ -111,6 +196,35 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
   }
   const zoomFocal = useRef<{ fx: number; fy: number; mx: number; my: number; page: number } | null>(null);
 
+  // ---- lazy page sizes. Real sizes arrive from the probe or from a page's own render; they're
+  // applied in one batch while the reader is still, and the restore effect then puts the anchor
+  // page back exactly where it was, so a page above changing height never moves the text you read.
+  const sizesRef = useRef(sizes);
+  sizesRef.current = sizes;
+  const probed = useRef(new Set<number>());
+  const pendingSizes = useRef(new Map<number, Size>());
+  const flushSizes = useCallback(() => {
+    if (scheduler.scrolling || pendingSizes.current.size === 0) return;
+    const updates = [...pendingSizes.current];
+    pendingSizes.current.clear();
+    needsRestore.current = true;
+    setSizes((prev) => {
+      const next = prev.slice();
+      for (const [num, sz] of updates) if (next[num - 1]) next[num - 1] = sz;
+      return next;
+    });
+  }, [scheduler]);
+  const reportSize = useCallback(
+    (num: number, w: number, h: number) => {
+      probed.current.add(num);
+      const cur = sizesRef.current[num - 1];
+      if (!cur || (Math.abs(cur.w - w) <= 1 && Math.abs(cur.h - h) <= 1)) return;
+      pendingSizes.current.set(num, { w, h });
+      flushSizes();
+    },
+    [flushSizes],
+  );
+
   // ---- load document + page sizes
   useEffect(() => {
     let cancelled = false;
@@ -120,31 +234,22 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
       async (d) => {
         if (cancelled) return void d.destroy();
         loaded = d;
+        const start = Math.min(Math.max(1, pageRef.current), d.numPages);
+        // Only page 1 and the start page are measured up front. Every other page assumes page 1's
+        // size until the lazy probe (or its own render) reports the real one.
         const first = (await d.getPage(1)).getViewport({ scale: 1 });
+        const startVp = start === 1 ? first : (await d.getPage(start)).getViewport({ scale: 1 });
         if (cancelled) return;
         const initial = Array.from({ length: d.numPages }, () => ({ w: first.width, h: first.height }));
-        const start = Math.min(Math.max(1, pageRef.current), d.numPages);
+        initial[start - 1] = { w: startVp.width, h: startVp.height };
+        probed.current = new Set([1, start]);
+        pendingSizes.current.clear();
         anchor.current = { page: start, frac: 0 };
         needsRestore.current = true;
         setPage(start);
         setRange([start - 1, start + 1]);
         setSizes(initial);
         setDoc(d);
-        // Most PDFs are uniform; fetch real sizes in the background and update once if any differ.
-        const real = initial.slice();
-        let differs = false;
-        for (let i = 2; i <= d.numPages && !cancelled; i++) {
-          const v = (await d.getPage(i)).getViewport({ scale: 1 });
-          if (Math.abs(v.width - first.width) > 1 || Math.abs(v.height - first.height) > 1) {
-            real[i - 1] = { w: v.width, h: v.height };
-            differs = true;
-          }
-          if (i % 25 === 0) await new Promise((r) => setTimeout(r, 0));
-        }
-        if (!cancelled && differs) {
-          needsRestore.current = true;
-          setSizes(real);
-        }
       },
       (err) => {
         console.error(err);
@@ -182,11 +287,26 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
     const s = scaleOf(i);
     return { w: Math.floor(sizes[i].w * s), h: Math.floor(sizes[i].h * s) };
   };
-  const maxW = useMemo(() => {
-    let m = 0;
-    for (let i = 0; i < sizes.length; i++) m = Math.max(m, Math.floor(sizes[i].w * scaleOf(i)));
-    return m;
+  /** Scroll-mode geometry from sizes alone (no DOM): box heights and each page's top inside the
+   * track, not counting the track's top padding. Spacers make the DOM match these exactly. */
+  const geo = useMemo(() => {
+    const n = sizes.length;
+    const heights = new Array<number>(n);
+    const tops = new Array<number>(n + 1);
+    let maxW = 0;
+    tops[0] = 0;
+    for (let i = 0; i < n; i++) {
+      const s = scaleOf(i);
+      heights[i] = Math.floor(sizes[i].h * s);
+      maxW = Math.max(maxW, Math.floor(sizes[i].w * s));
+      tops[i + 1] = tops[i] + heights[i] + GAP;
+    }
+    return { heights, tops, maxW };
   }, [sizes, scaleOf]);
+  const geoRef = useRef(geo);
+  geoRef.current = geo;
+  /** The track's top padding (8px + the safe-area inset), read from CSS. */
+  const padTop = () => (trackRef.current ? parseFloat(getComputedStyle(trackRef.current).paddingTop) || 0 : 0);
 
   // ---- which page is current / which pages are near (from scroll position)
   const locate = useCallback(() => {
@@ -205,25 +325,24 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
       const slot = slotRefs.current[current - 1];
       if (slot && slot.scrollHeight > slot.clientHeight) frac = slot.scrollTop / slot.scrollHeight;
     } else {
-      const top = el.scrollTop;
+      const { tops, heights } = geoRef.current;
+      const top = el.scrollTop - padTop();
       const probe = top + el.clientHeight * 0.3;
-      const pages = pageRefs.current;
       // binary search the last page whose top is above the probe line
       let a = 0;
       let b = numPages - 1;
       while (a < b) {
         const m = (a + b + 1) >> 1;
-        if ((pages[m]?.offsetTop ?? 0) <= probe) a = m;
+        if (tops[m] <= probe) a = m;
         else b = m - 1;
       }
       current = a + 1;
-      const el0 = pages[a];
-      if (el0) frac = (top - el0.offsetTop) / Math.max(1, el0.offsetHeight);
-      // visible range plus one screen of lookahead either side
+      frac = (top - tops[a]) / Math.max(1, heights[a]);
+      // visible range plus lookahead: 1.5 screens above, 2.5 below
       let first = a;
-      while (first > 0 && (pages[first]?.offsetTop ?? 0) + (pages[first]?.offsetHeight ?? 0) > top - el.clientHeight * 1.5) first--;
+      while (first > 0 && tops[first] > top - el.clientHeight * 1.5) first--;
       let last = a;
-      while (last < numPages - 1 && (pages[last + 1]?.offsetTop ?? Infinity) < top + el.clientHeight * 2.5) last++;
+      while (last < numPages - 1 && tops[last + 1] < top + el.clientHeight * 2.5) last++;
       lo = first + 1;
       hi = last + 1;
     }
@@ -262,8 +381,8 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
       const slot = slotRefs.current[p - 1];
       if (slot) slot.scrollTop = frac * slot.scrollHeight;
     } else {
-      const pageEl = pageRefs.current[p - 1];
-      if (pageEl) el.scrollTop = pageEl.offsetTop + frac * pageEl.offsetHeight;
+      const { tops, heights } = geoRef.current;
+      el.scrollTop = padTop() + tops[p - 1] + frac * heights[p - 1];
     }
     locate();
   }, [viewport, zoom, sizes, paged, numPages, locate]);
@@ -279,6 +398,7 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
     const settle = () => {
       scheduler.scrolling = false;
       locate();
+      flushSizes();
       scheduler.pump();
     };
     const onScroll = () => {
@@ -294,7 +414,37 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
       el.removeEventListener('scroll', onScroll, { capture: true });
       window.clearTimeout(idle);
     };
-  }, [locate, scheduler]);
+  }, [locate, scheduler, flushSizes]);
+
+  // ---- probe real page sizes for current ± PROBE_WINDOW, nearest first, after the current
+  // page's canvas and text layer (it's an idle task). Replaces 1.1's loop over every page.
+  useEffect(() => {
+    if (!doc || !numPages) return;
+    let cancelled = false;
+    const pending = () => {
+      const out: number[] = [];
+      for (let d = 0; d <= PROBE_WINDOW; d++) {
+        for (const n of d ? [page + d, page - d] : [page]) {
+          if (n >= 1 && n <= numPages && !probed.current.has(n)) out.push(n);
+        }
+      }
+      return out;
+    };
+    const step = async () => {
+      for (const n of pending().slice(0, PROBE_BATCH)) {
+        if (cancelled) return;
+        const v = (await doc.getPage(n)).getViewport({ scale: 1 });
+        if (cancelled) return;
+        reportSize(n, v.width, v.height);
+      }
+      if (!cancelled && pending().length) scheduler.requestIdle('probe', 10, step);
+    };
+    if (pending().length) scheduler.requestIdle('probe', 10, step);
+    return () => {
+      cancelled = true;
+      scheduler.cancelIdle('probe');
+    };
+  }, [doc, numPages, page, reportSize, scheduler]);
 
   // ---- report progress through the shell's single funnel
   const firstReport = useRef(true);
@@ -318,10 +468,7 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
       const target = Math.min(numPages, Math.max(1, Math.round(n)));
       const behavior: ScrollBehavior = smooth && Math.abs(target - pageRef.current) <= 2 ? 'smooth' : 'instant';
       if (paged) el.scrollTo({ left: (target - 1) * el.clientWidth, behavior });
-      else {
-        const p = pageRefs.current[target - 1];
-        if (p) el.scrollTo({ top: p.offsetTop - PAD, behavior });
-      }
+      else el.scrollTo({ top: padTop() + geoRef.current.tops[target - 1] - PAD, behavior });
       if (behavior === 'instant') requestAnimationFrame(locate);
     },
     [numPages, paged, locate],
@@ -480,44 +627,73 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
   const isActive = (n: number) => n >= lo && n <= hi;
   const ready = doc && numPages > 0 && viewport.w > 0;
 
-  const pageNodes = ready
-    ? sizes.map((_, i) => {
-        const n = i + 1;
-        const { w, h } = cssSize(i);
-        const node = (
-          <PdfPage
-            key={n}
-            index={i}
-            register={registerPage}
-            doc={doc}
-            num={n}
-            width={w}
-            height={h}
-            scale={scaleOf(i)}
-            active={isActive(n)}
-            theme={theme}
-            scheduler={scheduler}
-            onTextInfo={onTextInfo}
-          />
-        );
-        if (!paged) return node;
-        return (
-          <div
-            key={n}
-            ref={(el) => {
-              slotRefs.current[i] = el;
-            }}
-            // only live slots are scroll containers: on iOS every overflow:auto element is its
-            // own native scroll view, and hundreds of them make the carousel stutter
-            className={isActive(n) ? 'pdf-slot is-live' : 'pdf-slot'}
-          >
-            <div className="pdf-slot-inner" style={{ width: Math.max(viewport.w, w + PAD * 2) }}>
-              {node}
-            </div>
-          </div>
-        );
-      })
-    : null;
+  // Scroll mode mounts only the boxes around the current page (plus the live canvas range);
+  // spacers above and below stand in for the rest, so DOM size is flat however long the PDF is.
+  const mountLo = paged ? 1 : Math.max(1, Math.min(lo, page - MOUNT_AROUND));
+  const mountHi = paged ? numPages : Math.min(numPages, Math.max(hi, page + MOUNT_AROUND));
+
+  const renderPage = (i: number) => {
+    const n = i + 1;
+    const { w, h } = cssSize(i);
+    const node = (
+      <PdfPage
+        key={n}
+        index={i}
+        register={registerPage}
+        doc={doc!}
+        num={n}
+        baseW={sizes[i].w}
+        baseH={sizes[i].h}
+        width={w}
+        height={h}
+        scale={scaleOf(i)}
+        active={isActive(n)}
+        current={n === page}
+        theme={theme}
+        scheduler={scheduler}
+        onTextInfo={onTextInfo}
+        onRealSize={reportSize}
+      />
+    );
+    if (!paged) return node;
+    return (
+      <div
+        key={n}
+        ref={(el) => {
+          slotRefs.current[i] = el;
+        }}
+        // only live slots are scroll containers: on iOS every overflow:auto element is its
+        // own native scroll view, and hundreds of them make the carousel stutter
+        className={isActive(n) ? 'pdf-slot is-live' : 'pdf-slot'}
+      >
+        <div className="pdf-slot-inner" style={{ width: Math.max(viewport.w, w + PAD * 2) }}>
+          {node}
+        </div>
+      </div>
+    );
+  };
+
+  const pageNodes: React.ReactNode[] = [];
+  if (ready) for (let i = mountLo - 1; i < mountHi; i++) pageNodes.push(renderPage(i));
+
+  // Spacers look like a column of blank pages, so a fast fling past the mounted boxes still
+  // shows pages (exact for uniform PDFs, close enough for mixed ones until it settles).
+  const spacer = (height: number) => {
+    if (!ready || height <= 0) return null;
+    const { w, h } = cssSize(0);
+    const bg = PAGE_BG[theme];
+    return (
+      <div
+        aria-hidden
+        className="pdf-spacer"
+        style={{
+          height,
+          backgroundImage: `repeating-linear-gradient(to bottom, ${bg} 0, ${bg} ${h}px, transparent ${h}px, transparent ${h + GAP}px)`,
+          backgroundSize: `${w}px 100%`,
+        }}
+      />
+    );
+  };
 
   return (
     <div className={`relative h-full w-full pdf-theme-${theme}`} style={{ background: 'var(--reader-bg)' }}>
@@ -530,8 +706,10 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
         {paged ? (
           pageNodes
         ) : (
-          <div ref={trackRef} className="pdf-track" style={{ width: Math.max(viewport.w, maxW + PAD * 2) }}>
+          <div ref={trackRef} className="pdf-track" style={{ width: Math.max(viewport.w, geo.maxW + PAD * 2) }}>
+            {ready && spacer(geo.tops[mountLo - 1])}
             {pageNodes}
+            {ready && spacer(geo.tops[numPages] - geo.tops[mountHi])}
           </div>
         )}
       </div>
@@ -575,13 +753,18 @@ interface PageProps {
   register: (index: number, el: HTMLDivElement | null) => void;
   doc: PDFDocumentProxy;
   num: number;
+  /** Size at scale 1 that the layout assumed (real or estimated). */
+  baseW: number;
+  baseH: number;
   width: number;
   height: number;
   scale: number;
   active: boolean;
+  current: boolean;
   theme: ReaderTheme;
   scheduler: RenderScheduler;
   onTextInfo: (num: number, hasText: boolean) => void;
+  onRealSize: (num: number, w: number, h: number) => void;
 }
 
 /**
@@ -596,25 +779,31 @@ const PdfPage = memo(function PdfPage({
   register,
   doc,
   num,
+  baseW,
+  baseH,
   width,
   height,
   scale,
   active,
+  current,
   theme,
   scheduler,
   onTextInfo,
+  onRealSize,
 }: PageProps) {
   const boxRef = useRef<HTMLDivElement | null>(null);
   const textRef = useRef<HTMLDivElement>(null);
-  const rendered = useRef<{ key: string; canvas: HTMLCanvasElement } | null>(null);
+  const rendered = useRef<{ key: string; sharp: boolean; canvas: HTMLCanvasElement } | null>(null);
   const textDone = useRef(false);
 
-  // canvas
+  // canvas: first pass (capped at 2x DPR / 2.2 MP) via the main queue; for the current page a
+  // sharp pass (full DPR, up to 4.5 MP) as an idle task once the reader has settled on it.
   useEffect(() => {
     const box = boxRef.current;
     if (!box) return;
     if (!active) {
       scheduler.cancel(num);
+      scheduler.cancelIdle(`sharp${num}`);
       if (rendered.current) {
         // free the bitmap right away: iOS counts canvas memory until the element is collected
         rendered.current.canvas.width = 0;
@@ -625,21 +814,29 @@ const PdfPage = memo(function PdfPage({
       return;
     }
     const dpr = window.devicePixelRatio || 1;
-    const key = `${scale.toFixed(4)}|${dpr}`;
-    if (rendered.current?.key === key) return;
+    const key = `${scale.toFixed(4)}|${dpr}|${theme}`;
+    const area = baseW * scale * baseH * scale;
+    const firstRatio = Math.min(dpr, FIRST_PASS_MAX_DPR, Math.sqrt(FIRST_PASS_PIXELS / area));
+    const sharpRatio = Math.min(dpr, Math.sqrt(SHARP_PASS_PIXELS / area));
+    const needsSharp = sharpRatio > firstRatio * 1.05;
     let cancelled = false;
     let renderTask: { cancel(): void; promise: Promise<unknown> } | null = null;
-    scheduler.request(num, async () => {
+
+    const draw = async (sharp: boolean) => {
       if (cancelled) return;
       const p = await doc.getPage(num);
       if (cancelled) return;
+      const unit = p.getViewport({ scale: 1 });
+      if (Math.abs(unit.width - baseW) > 1 || Math.abs(unit.height - baseH) > 1) {
+        // the layout guessed this page's size; report it and render again at the right size
+        onRealSize(num, unit.width, unit.height);
+        return;
+      }
       const viewport = p.getViewport({ scale });
-      const ratio = Math.min(dpr, Math.sqrt(MAX_CANVAS_PIXELS / (viewport.width * viewport.height)));
-      const canvas = document.createElement('canvas');
+      const ratio = sharp ? sharpRatio : firstRatio;
+      let canvas = document.createElement('canvas');
       canvas.width = Math.floor(viewport.width * ratio);
       canvas.height = Math.floor(viewport.height * ratio);
-      canvas.className = 'pdf-canvas';
-      canvas.setAttribute('aria-hidden', 'true');
       renderTask = p.render({
         canvas,
         viewport,
@@ -656,20 +853,31 @@ const PdfPage = memo(function PdfPage({
         canvas.width = 0;
         return;
       }
+      canvas = tintCanvas(canvas, theme);
+      canvas.className = 'pdf-canvas';
+      canvas.setAttribute('aria-hidden', 'true');
       const old = rendered.current?.canvas;
       box.prepend(canvas);
       if (old) {
         old.width = 0;
         old.remove();
       }
-      rendered.current = { key, canvas };
-    });
+      rendered.current = { key, sharp: sharp || !needsSharp, canvas };
+    };
+
+    if (rendered.current?.key !== key) scheduler.request(num, () => draw(false));
+    if (current && needsSharp) {
+      scheduler.requestIdle(`sharp${num}`, 0, async () => {
+        if (rendered.current?.key === key && !rendered.current.sharp) await draw(true);
+      });
+    }
     return () => {
       cancelled = true;
       scheduler.cancel(num);
+      scheduler.cancelIdle(`sharp${num}`);
       renderTask?.cancel();
     };
-  }, [active, scale, num, doc, scheduler]);
+  }, [active, current, scale, theme, num, baseW, baseH, doc, scheduler, onRealSize]);
 
   // text layer (scale-independent)
   useEffect(() => {

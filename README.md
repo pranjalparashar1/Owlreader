@@ -36,7 +36,11 @@ Notes:
 
 - **Reading position** is saved through one debounced `onProgressChange` funnel in `ReaderShell`, and flushed when the app is backgrounded. It stores the page and zoom.
 - **Rotation** never resets the position: the PDF view keeps its page and its zoom relative to fit-width.
-- **Smooth scrolling on iPhone**: PDF paging is a CSS scroll-snap carousel and Scroll mode is a plain vertical scroller, so swipes and momentum run on the compositor. Only nearby pages hold a canvas, and pdf.js renders are queued for when scrolling stops. Pinch-zoom previews with a GPU transform and re-renders once at the end. Dark and sepia are a CSS filter on the page canvas, because iOS Safari has no canvas `ctx.filter` for pdf.js's `pageColors`.
+- **Smooth scrolling on iPhone**: PDF paging is a CSS scroll-snap carousel and Scroll mode is a plain vertical scroller, so swipes and momentum run on the compositor. pdf.js work is queued for when scrolling stops. Pinch-zoom previews with a GPU transform and re-renders once at the end.
+  - *Two-pass canvases*: pages first render at ≤2× DPR / 2.2 MP; the current page gets a sharp pass (full DPR, ≤4.5 MP) after 300 ms of stillness.
+  - *Lazy page sizes*: only page 1 and the start page are measured on open; real sizes for current ± 20 pages are probed while idle, and the restore effect keeps the reading position fixed when a page above changes height.
+  - *Virtualized Scroll mode*: ~17 page boxes around the current page, with spacers (drawn as blank pages) for the rest. Pages mode uses `content-visibility: auto` on off-screen slots.
+  - *Dark and sepia* are baked into each bitmap with canvas blend modes (`difference` + `hue` for dark, `multiply` for sepia), so there's no CSS filter for the compositor to re-run. iOS Safari has no canvas `ctx.filter`, which pdf.js's `pageColors` needs.
 - **Lookup pill** fires on `pointerdown`, so the tap can't collapse the selection first, and sits in a fixed safe zone (bottom-centre portrait, bottom-right landscape) away from iOS's native callout.
 - **Offline**: the app shell (including the pdf.js worker) is precached by Workbox. Lookups are cached in IndexedDB, and Wikimedia images are runtime-cached, so repeat lookups work in Airplane Mode. Maps need a connection.
 - **Seams for v2**: `LookupCard` only takes a `LookupResult`, and `LookupDrawer` only takes a query, so an "On This Page" list can reuse both. All progress goes through `onProgressChange`.
