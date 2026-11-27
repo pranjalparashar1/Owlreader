@@ -176,6 +176,17 @@ button {
   --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
   --min-font-size-inv: calc(1 / var(--min-font-size));
 }
+.textLayer,
+.textLayer :is(span, br) {
+  /* native selection and iOS's Copy | Look Up | Translate bar must always work on PDF text */
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+.textLayer > :not(.endOfContent),
+.textLayer .markedContent span {
+  pointer-events: auto;
+}
 .textLayer :is(span, br) {
   color: transparent;
   position: absolute;

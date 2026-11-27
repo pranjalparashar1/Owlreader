@@ -4,6 +4,8 @@ import { getCachedLookup, putCachedLookup } from '../db/libraryDb';
 const REST = 'https://en.wikipedia.org/api/rest_v1/page/summary/';
 const ACTION = 'https://en.wikipedia.org/w/api.php';
 const TIMEOUT_MS = 8000;
+/** Cached lookups older than this are refetched when online (kept and shown if that fails). */
+const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 // Wikimedia asks browser clients to identify themselves with this header (User-Agent can't be set from JS).
 const API_USER_AGENT = `OwlReader/${__APP_VERSION__} (https://github.com/pranjalparashar1/Owlreader)`;
 
@@ -171,12 +173,20 @@ function toStandard(query: string, d: SummaryJson): LookupResult {
  * (404 or disambiguation) MediaWiki search fallback with up to 4 candidates.
  * `exactTitle` skips normalization; used when the user taps a candidate.
  */
-export async function lookup(raw: string, opts: { exactTitle?: boolean } = {}): Promise<LookupResponse> {
+export async function lookup(raw: string, opts: { exactTitle?: boolean; refresh?: boolean } = {}): Promise<LookupResponse> {
   const query = opts.exactTitle ? raw.trim() : normalizeQuery(raw);
   if (!query) throw new Error('Nothing to look up.');
   const key = query.toLowerCase();
 
-  const cached = await getCachedLookup(key).catch(() => undefined);
+  const cached = opts.refresh ? undefined : await getCachedLookup(key).catch(() => undefined);
+  if (cached && Date.now() - (cached.cachedAt ?? 0) > CACHE_TTL_MS) {
+    // stale: try for a fresh copy, but an old answer beats an error when offline or rate-limited
+    try {
+      return await fetchAndCache(query, key);
+    } catch (e) {
+      if (!(e instanceof OfflineError || e instanceof ServiceError)) throw e;
+    }
+  }
   if (cached) {
     // lists cached before 1.1.1 may still include the disambiguation page itself
     if (cached.type === 'disambiguation' && cached.candidates) {
@@ -185,7 +195,10 @@ export async function lookup(raw: string, opts: { exactTitle?: boolean } = {}): 
     }
     return { result: cached, fromCache: true };
   }
+  return fetchAndCache(query, key);
+}
 
+async function fetchAndCache(query: string, key: string): Promise<LookupResponse> {
   const summary = await fetchSummary(query);
   if (summary && summary.type !== 'disambiguation') {
     const result = toStandard(query, summary);

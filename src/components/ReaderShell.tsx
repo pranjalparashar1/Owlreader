@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import type { BookRecord, ReaderLocation, ReadingProgress } from '../types';
 import { getBookFile, touchBook, updateProgress } from '../db/libraryDb';
-import { clearTextSelection, useTextSelection } from '../hooks/useTextSelection';
+import { clearTextSelection, restoreSelectionRange, saveSelectionRange, useTextSelection } from '../hooks/useTextSelection';
 import { useOrientation } from '../hooks/useOrientation';
 import type { Settings } from '../lib/settings';
 import LookupPill from './LookupPill';
@@ -87,11 +87,23 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   }, []);
   const onPageTurn = useCallback(() => setChrome(false), []);
 
+  // Lookup modes: 'wiki' = pill, tapping it clears the selection and opens the drawer.
+  // 'native' = no pill and we never touch the selection, so iOS's own Copy | Look Up |
+  // Translate bar is all there is. 'both' = pill too, and the selection comes back when the
+  // drawer closes so iOS's Look Up is still one tap away.
+  const mode = settings.lookupMode;
+  const savedRange = useRef<Range | null>(null);
   const openLookup = (text: string) => {
-    clearTextSelection();
+    savedRange.current = mode === 'both' ? saveSelectionRange() : null;
+    clearTextSelection(); // the drawer covers the words; iOS's bar would float over it
     setLookupReq((r) => ({ query: text, id: (r?.id ?? 0) + 1 }));
   };
-  const closeLookup = useCallback(() => setLookupReq(null), []);
+  const closeLookup = useCallback(() => {
+    setLookupReq(null);
+    const r = savedRange.current;
+    savedRange.current = null;
+    if (r) requestAnimationFrame(() => restoreSelectionRange(r));
+  }, []);
 
   const readerProps = file && {
     book,
@@ -154,7 +166,11 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   const barBase = 'fixed inset-x-0 z-30 border-line bg-chrome will-change-transform';
 
   return (
-    <div className="h-dvh-safe relative w-full overflow-hidden" style={{ background: 'var(--reader-bg)' }}>
+    <div
+      className="h-dvh-safe relative w-full overflow-hidden"
+      data-lookup-mode={mode}
+      style={{ background: 'var(--reader-bg)' }}
+    >
       <div className="absolute inset-0">
         <Suspense fallback={null}>
           {readerProps && <PdfReader ref={readerRef} {...readerProps} flow={settings.flow} />}
@@ -253,7 +269,7 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
         </div>
       </footer>
 
-      {selection.text && !lookupReq && (
+      {mode !== 'native' && selection.text && !lookupReq && (
         <LookupPill text={selection.text} orientation={orientation} lift={chrome ? 76 : 0} onLookup={openLookup} />
       )}
       <ReaderSettings

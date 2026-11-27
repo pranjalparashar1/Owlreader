@@ -33,6 +33,20 @@ function schedule() {
   readTimer = window.setTimeout(readSelection, 120);
 }
 
+/** The live selection range, so 'both' lookup mode can put it back after the drawer closes. */
+export function saveSelectionRange(): Range | null {
+  const sel = document.getSelection();
+  return sel && sel.rangeCount && !sel.isCollapsed ? sel.getRangeAt(0).cloneRange() : null;
+}
+
+export function restoreSelectionRange(range: Range | null) {
+  if (!range || !range.startContainer.isConnected || !range.endContainer.isConnected) return;
+  const sel = document.getSelection();
+  if (!sel || !sel.isCollapsed) return; // the reader already selected something else
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
 /** Clears the current selection (and with it iOS's native callout bar). */
 export function clearTextSelection() {
   try {
