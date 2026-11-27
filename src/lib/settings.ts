@@ -26,7 +26,8 @@ function load(): Settings {
       const out = { ...DEFAULTS };
       if (saved.theme === 'light' || saved.theme === 'sepia' || saved.theme === 'dark') out.theme = saved.theme;
       if (saved.flow === 'paginated' || saved.flow === 'scrolled') out.flow = saved.flow;
-      if (saved.lookupMode === 'wiki' || saved.lookupMode === 'native' || saved.lookupMode === 'both') out.lookupMode = saved.lookupMode;
+      if (saved.lookupMode === 'wiki' || saved.lookupMode === 'native' || saved.lookupMode === 'both')
+        out.lookupMode = saved.lookupMode;
       return out;
     }
   } catch {

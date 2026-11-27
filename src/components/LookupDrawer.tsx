@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Orientation } from '../types';
 import { lookup, normalizeQuery, OfflineError, ServiceError, type LookupResponse } from '../services/wikipedia';
 import LookupCard from './LookupCard';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import { BackIcon, CloseIcon, SearchIcon } from './icons';
 
 export interface LookupRequest {
@@ -79,7 +80,10 @@ export default function LookupDrawer({ request, orientation, onClose }: Props) {
         ...(e instanceof OfflineError
           ? { message: "You're offline, and this hasn't been looked up before." }
           : e instanceof ServiceError
-            ? { message: e.message, detail: e.reason === 'timeout' ? 'Check your connection and try again.' : 'Give it a moment and try again.' }
+            ? {
+                message: e.message,
+                detail: e.reason === 'timeout' ? 'Check your connection and try again.' : 'Give it a moment and try again.',
+              }
             : { message: 'Lookup failed. Please try again.' }),
       };
     }
@@ -190,6 +194,8 @@ export default function LookupDrawer({ request, orientation, onClose }: Props) {
     };
   }, [mounted, landscape]);
 
+  useFocusTrap(sheetRef, mounted && open);
+
   if (!mounted) return null;
 
   // Portrait: the sheet is full height and sits translated down to a half-screen detent.
@@ -225,7 +231,7 @@ export default function LookupDrawer({ request, orientation, onClose }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-50" aria-hidden={!open}>
+    <div className="fixed inset-0 z-50" aria-hidden={!open} inert={!open}>
       <div
         className="absolute inset-0 bg-black transition-opacity"
         style={{ opacity: shown ? (landscape ? 0.18 : 0.3) : 0, transitionDuration: `${ANIM_MS}ms` }}
@@ -283,7 +289,11 @@ export default function LookupDrawer({ request, orientation, onClose }: Props) {
                 className="h-10 w-full rounded-full bg-surface-2 pr-3 pl-9 text-[16px] outline-none ring-accent/50 focus:ring-2"
               />
             </form>
-            <button onClick={onClose} className="rounded-full bg-surface-2 p-2 text-fg active:opacity-70" aria-label="Close lookup">
+            <button
+              onClick={onClose}
+              className="rounded-full bg-surface-2 p-2 text-fg active:opacity-70"
+              aria-label="Close lookup"
+            >
               <CloseIcon size={18} />
             </button>
           </div>

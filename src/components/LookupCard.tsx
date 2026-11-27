@@ -20,7 +20,8 @@ interface Props {
  * so a future "On This Page" drawer can render auto-extracted entities with it as-is.
  */
 export default function LookupCard({ result, fromCache, onPickCandidate, compact, onMapOpen, onRefresh }: Props) {
-  if (result.type === 'disambiguation') return <Candidates result={result} onPick={onPickCandidate} onRefresh={fromCache ? onRefresh : undefined} />;
+  if (result.type === 'disambiguation')
+    return <Candidates result={result} onPick={onPickCandidate} onRefresh={fromCache ? onRefresh : undefined} />;
   if (result.type === 'not_found') {
     return (
       <div className="px-5 py-8 text-center">
@@ -34,12 +35,18 @@ export default function LookupCard({ result, fromCache, onPickCandidate, compact
   return <Article result={result} fromCache={fromCache} compact={compact} onMapOpen={onMapOpen} onRefresh={onRefresh} />;
 }
 
-function Candidates({ result, onPick, onRefresh }: { result: LookupResult; onPick: (title: string) => void; onRefresh?: () => void }) {
+function Candidates({
+  result,
+  onPick,
+  onRefresh,
+}: {
+  result: LookupResult;
+  onPick: (title: string) => void;
+  onRefresh?: () => void;
+}) {
   return (
     <div className="px-4 pt-3 pb-5">
-      <p className="px-1 text-[13px] text-muted">
-        “{result.query}” could mean several things. Pick one:
-      </p>
+      <p className="px-1 text-[13px] text-muted">“{result.query}” could mean several things. Pick one:</p>
       <ul className="mt-3 space-y-2">
         {result.candidates?.map((c) => (
           <li key={c.title}>
@@ -89,7 +96,14 @@ function Hero({ src, portrait, compact }: { src: string; portrait?: boolean; com
   return (
     <div className={`relative overflow-hidden bg-surface-2 ${compact ? 'h-[150px]' : 'h-[200px]'}`}>
       {/* blurred backdrop fills the letterbox so portraits aren't cropped at the forehead */}
-      <img key={mode} src={src} crossOrigin={cross} alt="" aria-hidden className="absolute inset-0 h-full w-full scale-125 object-cover opacity-60 blur-2xl" />
+      <img
+        key={mode}
+        src={src}
+        crossOrigin={cross}
+        alt=""
+        aria-hidden
+        className="absolute inset-0 h-full w-full scale-125 object-cover opacity-60 blur-2xl"
+      />
       <img
         key={`${mode}-main`}
         src={src}
@@ -119,7 +133,9 @@ function Article({
   const coords = result.coordinates;
   return (
     <article>
-      {result.imageUrl && <Hero key={result.imageUrl} src={result.imageUrl} portrait={result.imageIsPortrait} compact={compact} />}
+      {result.imageUrl && (
+        <Hero key={result.imageUrl} src={result.imageUrl} portrait={result.imageIsPortrait} compact={compact} />
+      )}
       <div className="px-5 pt-4 pb-5">
         <h2 className="font-serif text-[22px] leading-tight font-semibold">{result.title}</h2>
         {result.description && <p className="mt-1 text-[13.5px] text-muted">{result.description}</p>}

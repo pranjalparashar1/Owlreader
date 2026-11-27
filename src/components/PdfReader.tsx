@@ -4,6 +4,7 @@ import { localFlag } from '../lib/settings';
 import type { ReaderTheme } from '../types';
 import { tapZone, type ReaderHandle, type ReaderProps } from './readerTypes';
 import { CloseIcon } from './icons';
+import { prefersReducedMotion } from '../hooks/useFocusTrap';
 
 const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 4;
@@ -388,7 +389,6 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
     locate();
   }, [viewport, zoom, sizes, paged, numPages, locate]);
 
-
   // ---- scroll handling. While the finger or momentum is moving we do *nothing* but note
   // that we're scrolling: no React state, no DOM changes, no pdf.js work. iOS scrolls on its
   // own thread, but it still needs the main thread free to paint newly exposed content.
@@ -467,7 +467,8 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
       const el = scrollerRef.current;
       if (!el || !numPages) return;
       const target = Math.min(numPages, Math.max(1, Math.round(n)));
-      const behavior: ScrollBehavior = smooth && Math.abs(target - pageRef.current) <= 2 ? 'smooth' : 'instant';
+      const behavior: ScrollBehavior =
+        smooth && !prefersReducedMotion() && Math.abs(target - pageRef.current) <= 2 ? 'smooth' : 'instant';
       if (paged) el.scrollTo({ left: (target - 1) * el.clientWidth, behavior });
       else el.scrollTo({ top: padTop() + geoRef.current.tops[target - 1] - PAD, behavior });
       if (behavior === 'instant') requestAnimationFrame(locate);
@@ -477,12 +478,12 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
 
   const next = useCallback(() => {
     const el = scrollerRef.current;
-    if (!paged && el) el.scrollBy({ top: el.clientHeight * 0.85, behavior: 'smooth' });
+    if (!paged && el) el.scrollBy({ top: el.clientHeight * 0.85, behavior: prefersReducedMotion() ? 'instant' : 'smooth' });
     else goToPage(pageRef.current + 1, true);
   }, [goToPage, paged]);
   const prev = useCallback(() => {
     const el = scrollerRef.current;
-    if (!paged && el) el.scrollBy({ top: -el.clientHeight * 0.85, behavior: 'smooth' });
+    if (!paged && el) el.scrollBy({ top: -el.clientHeight * 0.85, behavior: prefersReducedMotion() ? 'instant' : 'smooth' });
     else goToPage(pageRef.current - 1, true);
   }, [goToPage, paged]);
 
@@ -962,7 +963,10 @@ const PdfPage = memo(function PdfPage({
       const p = await doc.getPage(num);
       const content = await p.getTextContent();
       if (cancelled) return;
-      onTextInfo(num, content.items.some((it) => 'str' in it && /\S/.test(it.str)));
+      onTextInfo(
+        num,
+        content.items.some((it) => 'str' in it && /\S/.test(it.str)),
+      );
       layer = new pdfjs.TextLayer({ textContentSource: content, container: tl, viewport: p.getViewport({ scale: 1 }) });
       await layer.render();
       if (cancelled) return;
@@ -986,7 +990,16 @@ const PdfPage = memo(function PdfPage({
       }}
       className="pdf-page"
       data-page={num}
-      style={{ width, height, background: PAGE_BG[theme], ['--total-scale-factor' as string]: scale, ['--scale-factor' as string]: scale }}
+      role="group"
+      aria-roledescription="page"
+      aria-label={`Page ${num}`}
+      style={{
+        width,
+        height,
+        background: PAGE_BG[theme],
+        ['--total-scale-factor' as string]: scale,
+        ['--scale-factor' as string]: scale,
+      }}
     >
       <div ref={textRef} className="textLayer" />
     </div>

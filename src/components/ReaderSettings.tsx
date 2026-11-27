@@ -1,4 +1,5 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import type { ReaderTheme } from '../types';
 import type { LookupMode, Settings } from '../lib/settings';
 import { MinusIcon, PagesIcon, PlusIcon, ScrollIcon } from './icons';
@@ -34,12 +35,17 @@ export default function ReaderSettings({ open, settings, zoom, onSettings, onZoo
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
+  const panelRef = useRef<HTMLElement>(null);
+  useFocusTrap(panelRef, open);
 
   return (
-    <div className={`fixed inset-0 z-40 ${open ? '' : 'pointer-events-none'}`} aria-hidden={!open}>
+    // inert while closed: the panel stays mounted for its animation, but must not take focus
+    <div className={`fixed inset-0 z-40 ${open ? '' : 'pointer-events-none'}`} aria-hidden={!open} inert={!open}>
       <div className="absolute inset-0" onClick={onClose} />
       <section
+        ref={panelRef}
         role="dialog"
+        aria-modal="true"
         aria-label="Reading settings"
         className="absolute rounded-2xl bg-surface p-4 text-fg shadow-[0_12px_40px_-8px_rgb(0_0_0/0.45)] ring-1 ring-line"
         style={{

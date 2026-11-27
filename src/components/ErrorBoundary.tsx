@@ -29,11 +29,21 @@ export default class ErrorBoundary extends Component<Props, State> {
       if (this.props.onBack) this.props.onBack();
       else location.replace(location.pathname + location.search);
     };
-    return <ErrorScreen message="OwlReader hit an unexpected problem. Your books and reading positions are safe." onBack={back} />;
+    return (
+      <ErrorScreen message="OwlReader hit an unexpected problem. Your books and reading positions are safe." onBack={back} />
+    );
   }
 }
 
-export function ErrorScreen({ title = 'Something went wrong', message, onBack }: { title?: string; message: string; onBack: () => void }) {
+export function ErrorScreen({
+  title = 'Something went wrong',
+  message,
+  onBack,
+}: {
+  title?: string;
+  message: string;
+  onBack: () => void;
+}) {
   return (
     <div role="alert" className="h-dvh-safe flex flex-col items-center justify-center gap-3 bg-bg p-8 text-center text-fg">
       <h1 className="font-serif text-[21px] font-semibold">{title}</h1>

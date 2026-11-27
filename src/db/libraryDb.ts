@@ -34,11 +34,7 @@ export async function getBook(id: string) {
 export async function addBook(book: BookRecord, file: { data: ArrayBuffer; name: string; type: string }) {
   const d = await db();
   const tx = d.transaction(['books', 'files'], 'readwrite');
-  await Promise.all([
-    tx.objectStore('books').put(book),
-    tx.objectStore('files').put({ bookId: book.id, ...file }),
-    tx.done,
-  ]);
+  await Promise.all([tx.objectStore('books').put(book), tx.objectStore('files').put({ bookId: book.id, ...file }), tx.done]);
 }
 
 export async function getBookFile(bookId: string) {
@@ -93,6 +89,20 @@ async function pruneLookups(d: IDBPDatabase<OwlDB>) {
   all.sort((a, b) => a[1] - b[1]);
   await Promise.all(all.slice(0, all.length - LOOKUP_CACHE_MAX).map(([k]) => tx.store.delete(k)));
   await tx.done;
+}
+
+export async function storageCounts(): Promise<{ books: number; lookups: number }> {
+  const d = await db();
+  const [books, lookups] = await Promise.all([d.count('books'), d.count('lookupCache')]);
+  return { books, lookups };
+}
+
+/** Frees the space used by saved Wikipedia lookups (and their cached photos). Books are untouched. */
+export async function clearLookupCache() {
+  await (await db()).clear('lookupCache');
+  if ('caches' in window) {
+    for (const name of await caches.keys()) if (name.startsWith('wiki-images')) await caches.delete(name);
+  }
 }
 
 let persistRequested = false;

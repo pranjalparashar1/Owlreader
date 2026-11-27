@@ -68,7 +68,11 @@ function subscribe(cb: () => void) {
 }
 
 export function useTextSelection(): SelectionState {
-  return useSyncExternalStore(subscribe, () => state, () => state);
+  return useSyncExternalStore(
+    subscribe,
+    () => state,
+    () => state,
+  );
 }
 
 if (typeof document !== 'undefined') {

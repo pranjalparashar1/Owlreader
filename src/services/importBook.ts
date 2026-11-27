@@ -6,7 +6,11 @@ const COVER_W = 360;
 export const isPdfFile = (file: File) => file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf';
 
 const titleFromFilename = (name: string) =>
-  name.replace(/\.pdf$/i, '').replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim() || 'Untitled';
+  name
+    .replace(/\.pdf$/i, '')
+    .replace(/[_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim() || 'Untitled';
 
 async function pdfMeta(data: ArrayBuffer) {
   const { pdfjs } = await import('../lib/pdfjs');
