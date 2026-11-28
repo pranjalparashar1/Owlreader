@@ -377,3 +377,20 @@ button {
     transition-duration: 1ms !important;
   }
 }
+
+/* Lookup drawer search field: our own clear button, not WebKit's */
+.lookup-search {
+  appearance: none;
+  -webkit-appearance: none;
+}
+.lookup-search::-webkit-search-cancel-button,
+.lookup-search::-webkit-search-decoration {
+  -webkit-appearance: none;
+  display: none;
+}
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

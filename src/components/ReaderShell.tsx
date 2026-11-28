@@ -1,15 +1,17 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import type { BookRecord, ReaderLocation, ReadingProgress } from '../types';
-import { getBookFile, touchBook, updateProgress } from '../db/libraryDb';
+import type { BookIndexRecord, BookRecord, ReaderLocation, ReadingProgress } from '../types';
+import { getBookFile, getBookIndex, touchBook, updateBook, updateProgress } from '../db/libraryDb';
+import { nearbyTerms, seedContextTag } from '../lib/terms';
+import { findEntity } from '../features/xray/find';
 import { clearTextSelection, restoreSelectionRange, saveSelectionRange, useTextSelection } from '../hooks/useTextSelection';
 import { useOrientation } from '../hooks/useOrientation';
 import type { Settings } from '../lib/settings';
 import LookupPill from './LookupPill';
 import LookupDrawer, { type LookupRequest } from './LookupDrawer';
-import ReaderSettings from './ReaderSettings';
+import ReaderSettings, { type XrayState } from './ReaderSettings';
 import { ErrorScreen } from './ErrorBoundary';
 import type { ReaderHandle } from './readerTypes';
-import { BackIcon, FitWidthIcon } from './icons';
+import { BackIcon, CloseIcon, FitWidthIcon, ReturnIcon, XrayIcon } from './icons';
 
 interface Props {
   book: BookRecord;
@@ -36,6 +38,12 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   const readerRef = useRef<ReaderHandle>(null);
   const orientation = useOrientation();
   const selection = useTextSelection();
+  const [contextTag, setContextTag] = useState(() => book.contextTag ?? seedContextTag(book.title));
+  const [pageTerms, setPageTerms] = useState<string[]>([]);
+  const [wholeBook, setWholeBook] = useState(!!book.xrayWholeBook);
+  const [bookIndex, setBookIndex] = useState<BookIndexRecord | null>(null);
+  const [returnTo, setReturnTo] = useState<number | null>(null);
+  const [xrayBusy, setXrayBusy] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -81,6 +89,89 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   }, [flush]);
 
   const onLocation = useCallback((loc: ReaderLocation) => setLocation(loc), []);
+  const locationRef = useRef(location);
+  locationRef.current = location;
+
+  // ---- book context: saved shortly after the reader stops typing
+  const ctxTimer = useRef<number | undefined>(undefined);
+  const onContextTag = (tag: string) => {
+    setContextTag(tag);
+    window.clearTimeout(ctxTimer.current);
+    ctxTimer.current = window.setTimeout(() => updateBook(book.id, { contextTag: tag.trim() }).catch(() => {}), 400);
+  };
+  useEffect(() => () => window.clearTimeout(ctxTimer.current), []);
+
+  // ---- X-Ray. Off = nothing below runs. Whole book = index in idle chunks (lazily loaded).
+  const xrayOn = settings.xray === 'on';
+  const xrayState: XrayState = !xrayOn ? 'off' : wholeBook ? 'book' : 'page';
+  const onXray = (s: XrayState) => {
+    if (s !== 'off' && !xrayOn) onSettings({ xray: 'on' });
+    if (s === 'off') onSettings({ xray: 'off' });
+    const wb = s === 'book' ? true : s === 'page' ? false : wholeBook;
+    if (wb !== wholeBook) {
+      setWholeBook(wb);
+      updateBook(book.id, { xrayWholeBook: wb }).catch(() => {});
+    }
+  };
+  // an index built earlier still answers "In This Book" in This Page mode
+  useEffect(() => {
+    if (!xrayOn) return;
+    let alive = true;
+    getBookIndex(book.id)
+      .then((r) => alive && r && setBookIndex(r))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [book.id, xrayOn]);
+  const pageCountKnown = location?.pageCount ?? 0;
+  useEffect(() => {
+    if (!xrayOn || !wholeBook || !pageCountKnown) return;
+    let stop: (() => void) | null = null;
+    let cancelled = false;
+    import('../features/xray/indexer').then(({ startIndexing }) => {
+      if (cancelled) return;
+      stop = startIndexing({
+        bookId: book.id,
+        totalPages: pageCountKnown,
+        getText: (n) => readerRef.current?.getPageText(n, { idle: true }) ?? Promise.reject(new Error('closed')),
+        onProgress: setBookIndex,
+      });
+    });
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, [book.id, xrayOn, wholeBook, pageCountKnown]);
+  const inBook = useCallback((term: string) => (xrayOn ? findEntity(bookIndex, term) : undefined), [xrayOn, bookIndex]);
+
+  const openXray = async () => {
+    const page = locationRef.current?.page ?? 1;
+    setXrayBusy(true);
+    try {
+      const text = (await readerRef.current?.getPageText(page)) ?? '';
+      const { extractPage } = await import('../features/xray/client');
+      const entities = await extractPage(text);
+      setPageTerms([]);
+      setLookupReq((r) => ({ query: '', id: (r?.id ?? 0) + 1, xray: { page, entities } }));
+    } catch {
+      setLookupReq((r) => ({ query: '', id: (r?.id ?? 0) + 1, xray: { page, entities: [] } }));
+    } finally {
+      setXrayBusy(false);
+    }
+  };
+
+  // ---- jump from an "In This Book" card, with a way back
+  const onJump = (page: number) => {
+    const from = locationRef.current?.page;
+    setReturnTo((r) => r ?? from ?? null);
+    closeLookup();
+    readerRef.current?.goToPage(page);
+  };
+  const goBack = () => {
+    if (returnTo !== null) readerRef.current?.goToPage(returnTo);
+    setReturnTo(null);
+  };
   const onCenterTap = useCallback(() => {
     setChrome((c) => !c);
     setSettingsOpen(false);
@@ -95,8 +186,18 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   const savedRange = useRef<Range | null>(null);
   const openLookup = (text: string) => {
     savedRange.current = mode === 'both' ? saveSelectionRange() : null;
+    // the page the words are on (in Scroll mode it may not be the "current" one)
+    const node = document.getSelection()?.anchorNode;
+    const el = node && (node.nodeType === 1 ? (node as Element) : node.parentElement);
+    const onPage = Number(el?.closest<HTMLElement>('.pdf-page')?.dataset.page) || locationRef.current?.page || 1;
     clearTextSelection(); // the drawer covers the words; iOS's bar would float over it
+    setPageTerms([]);
     setLookupReq((r) => ({ query: text, id: (r?.id ?? 0) + 1 }));
+    // context chips: capitalised terms near the selection (pdf.js text is already parsed: fast)
+    readerRef.current
+      ?.getPageText(onPage)
+      .then((t) => setPageTerms(nearbyTerms(t, text, [contextTag])))
+      .catch(() => {});
   };
   const closeLookup = useCallback(() => {
     setLookupReq(null);
@@ -203,6 +304,18 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
             <BackIcon size={22} /> <span className="hidden sm:inline">Library</span>
           </button>
           <div className="min-w-0 flex-1 truncate text-center font-serif text-[15px] font-semibold">{book.title}</div>
+          {xrayOn && (
+            <button
+              onClick={openXray}
+              disabled={xrayBusy || !location}
+              aria-label="X-Ray this page"
+              title="X-Ray"
+              className="flex h-9 items-center gap-1 rounded-full px-2.5 text-[13px] font-semibold active:bg-surface-2 disabled:opacity-60"
+            >
+              <XrayIcon size={19} />
+              <span className="hidden sm:inline">X-Ray</span>
+            </button>
+          )}
           <button
             onClick={() => setSettingsOpen((o) => !o)}
             aria-label="Reading settings"
@@ -279,6 +392,24 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
         </div>
       </footer>
 
+      {returnTo !== null && !lookupReq && (
+        <div
+          className="fixed z-40 flex items-center rounded-full bg-fg text-bg shadow-[0_8px_28px_-6px_rgb(0_0_0/0.45)] transition-[top] duration-200"
+          style={{
+            left: '50%',
+            transform: 'translateX(-50%)',
+            top: `calc(${chrome ? 64 : 14}px + env(safe-area-inset-top) * 1.25)`,
+          }}
+        >
+          <button onClick={goBack} className="flex items-center gap-1.5 py-2 pr-2 pl-3.5 text-[14px] font-medium">
+            <ReturnIcon size={16} className="text-accent" /> Return to p. {returnTo}
+          </button>
+          <button onClick={() => setReturnTo(null)} className="py-2 pr-3 pl-1 opacity-70" aria-label="Dismiss return">
+            <CloseIcon size={15} />
+          </button>
+        </div>
+      )}
+
       {mode !== 'native' && selection.text && !lookupReq && (
         <LookupPill text={selection.text} orientation={orientation} lift={chrome ? 76 : 0} onLookup={openLookup} />
       )}
@@ -289,8 +420,21 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
         onSettings={onSettings}
         onZoom={(dir) => readerRef.current?.zoom(dir)}
         onClose={() => setSettingsOpen(false)}
+        contextTag={contextTag}
+        onContextTag={onContextTag}
+        xray={xrayState}
+        onXray={onXray}
+        indexProgress={wholeBook && bookIndex ? { indexed: bookIndex.indexedPages, total: bookIndex.totalPages } : null}
       />
-      <LookupDrawer request={lookupReq} orientation={orientation} onClose={closeLookup} />
+      <LookupDrawer
+        request={lookupReq}
+        orientation={orientation}
+        onClose={closeLookup}
+        contextTag={contextTag.trim() || undefined}
+        pageTerms={pageTerms}
+        inBook={xrayOn ? inBook : undefined}
+        onJump={onJump}
+      />
     </div>
   );
 }

@@ -107,6 +107,22 @@ export const PagesIcon = (p: P) => (
   </svg>
 );
 
+/** X-Ray: a page with a lens over it. */
+export const XrayIcon = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21H11" />
+    <path d="M8.5 8h6M8.5 11.5h3" />
+    <circle cx="16" cy="15.5" r="3.5" />
+    <path d="m18.6 18.1 2.4 2.4" />
+  </svg>
+);
+export const ReturnIcon = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M9 14 4 9l5-5" />
+    <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+  </svg>
+);
+
 export function OwlMark({ size = 28 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 512 512" aria-hidden>

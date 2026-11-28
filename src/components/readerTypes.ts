@@ -7,6 +7,11 @@ export interface ReaderHandle {
   zoom(dir: 1 | -1 | 0): void; // 0 = fit width
   /** Tiny render of a page for the scrubber preview; null if superseded or failed. */
   renderThumbnail(page: number, widthPx: number): Promise<HTMLCanvasElement | null>;
+  /**
+   * A page's text from pdf.js. `idle` waits for the reader's idle queue (after visible pages have
+   * rendered, never mid-scroll): for background work like whole-book X-Ray indexing.
+   */
+  getPageText(page: number, opts?: { idle?: boolean }): Promise<string>;
 }
 
 export interface ReaderProps {
