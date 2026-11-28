@@ -3,7 +3,8 @@ import { pdfjs, type PDFDocumentProxy } from '../lib/pdfjs';
 import { localFlag } from '../lib/settings';
 import { pageTextFromItems } from '../lib/terms';
 import type { ReaderTheme } from '../types';
-import { PAGE_BG, tintCanvas } from '../lib/tint';
+import { PAGE_BG, isInverted, tintCanvas } from '../lib/tint';
+import { pageImageMatrices, toCanvasSpace } from '../lib/pageImages';
 import { tapZone, type ReaderHandle, type ReaderProps } from './readerTypes';
 import { CloseIcon } from './icons';
 import { prefersReducedMotion } from '../hooks/useFocusTrap';
@@ -520,7 +521,12 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
           canvas.width = 0;
           return null;
         }
-        canvas = tintCanvas(canvas, theme);
+        const imgs = isInverted(theme) ? toCanvasSpace(await pageImageMatrices(p, task), vp.transform) : [];
+        if (cancelled) {
+          canvas.width = 0;
+          return null;
+        }
+        canvas = tintCanvas(canvas, theme, imgs);
         cache.set(key, canvas);
         while (cache.size > THUMB_CACHE) {
           const [oldKey, old] = cache.entries().next().value!;
@@ -895,7 +901,13 @@ const PdfPage = memo(function PdfPage({
         canvas.width = 0;
         return;
       }
-      canvas = tintCanvas(canvas, theme);
+      // dark/black: find the page's photos so they keep their colours (see tint.ts)
+      const imgs = isInverted(theme) ? toCanvasSpace(await pageImageMatrices(p, renderTask), viewport.transform, ratio) : [];
+      if (cancelled) {
+        canvas.width = 0;
+        return;
+      }
+      canvas = tintCanvas(canvas, theme, imgs);
       canvas.className = 'pdf-canvas';
       canvas.setAttribute('aria-hidden', 'true');
       const old = rendered.current?.canvas;

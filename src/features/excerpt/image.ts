@@ -4,7 +4,8 @@
  * bands into one continuous image with even spacing, so a passage split across pages reads as one.
  */
 import type { PDFDocumentProxy } from '../../lib/pdfjs';
-import { PAGE_BG, tintCanvas } from '../../lib/tint';
+import { PAGE_BG, isInverted, tintCanvas } from '../../lib/tint';
+import { pageImageMatrices, toCanvasSpace } from '../../lib/pageImages';
 import type { ClipRange, ReaderTheme } from '../../types';
 import { pageLayout, slices, type PageLayout } from './layout';
 
@@ -26,8 +27,9 @@ async function render(doc: PDFDocumentProxy, n: number, scale: number) {
   const canvas = document.createElement('canvas');
   canvas.width = Math.ceil(vp.width);
   canvas.height = Math.ceil(vp.height);
-  await page.render({ canvas, viewport: vp, background: '#ffffff' }).promise;
-  return canvas;
+  const task = page.render({ canvas, viewport: vp, background: '#ffffff' });
+  await task.promise;
+  return { canvas, page, task, transform: vp.transform };
 }
 
 /** Paint over running headers and page numbers so neither the trim nor the image keeps them. */
@@ -79,7 +81,7 @@ export async function trimSlices(doc: PDFDocumentProxy, range: ClipRange): Promi
   const out: Trim[] = [];
   for (const s of slices(range)) {
     const layout = await pageLayout(doc, s.page);
-    const canvas = await render(doc, s.page, 1);
+    const { canvas } = await render(doc, s.page, 1);
     blankFurniture(canvas, layout);
     const box = inkBox(canvas, s.top * canvas.height, s.bottom * canvas.height);
     const { width: W, height: H } = canvas;
@@ -111,6 +113,9 @@ export interface ImageOptions {
   pageWidthPx?: number;
 }
 
+const FOOTER_RULE: Record<ReaderTheme, string> = { light: '#e7e2da', sepia: '#d9ccb0', dark: '#3a3a3a', black: '#262626' };
+const FOOTER_INK: Record<ReaderTheme, string> = { light: '#78716c', sepia: '#7a6a50', dark: '#a8a29e', black: '#a3a3a3' };
+
 const MAX_PIXELS = 15_000_000; // iOS caps a canvas at 16.7 MP
 
 export async function exportImage(doc: PDFDocumentProxy, range: ClipRange, opts: ImageOptions): Promise<Blob> {
@@ -132,14 +137,17 @@ export async function exportImage(doc: PDFDocumentProxy, range: ClipRange, opts:
   out.width = Math.round(wPt * scale);
   out.height = Math.round(hPt * scale);
   const ctx = out.getContext('2d')!;
-  ctx.fillStyle = '#ffffff';
+  ctx.fillStyle = PAGE_BG[opts.theme];
   ctx.fillRect(0, 0, out.width, out.height);
 
   let y = margin * scale;
   for (let i = 0; i < trims.length; i++) {
     const t = trims[i];
-    const page = await render(doc, t.page, scale);
-    blankFurniture(page, t.layout);
+    const r = await render(doc, t.page, scale);
+    blankFurniture(r.canvas, t.layout);
+    // each page is tinted on its own so its photos can be kept (see tint.ts)
+    const imgs = isInverted(opts.theme) ? toCanvasSpace(await pageImageMatrices(r.page, r.task), r.transform) : [];
+    const page = tintCanvas(r.canvas, opts.theme, imgs);
     const sx = left * page.width;
     const sy = t.top * page.height;
     const sw = (right - left) * page.width;
@@ -149,15 +157,15 @@ export async function exportImage(doc: PDFDocumentProxy, range: ClipRange, opts:
     y += sh + (gapsPt[i] ?? 0) * scale;
   }
 
-  const tinted = tintCanvas(out, opts.theme);
+  const tinted = out;
   if (opts.footer) {
     const c = tinted.getContext('2d')!;
     const fy = tinted.height - footerPt * scale;
     c.fillStyle = PAGE_BG[opts.theme];
     c.fillRect(0, fy - 2, tinted.width, footerPt * scale + 2);
-    c.fillStyle = opts.theme === 'dark' ? '#3a3a3a' : opts.theme === 'sepia' ? '#d9ccb0' : '#e7e2da';
+    c.fillStyle = FOOTER_RULE[opts.theme];
     c.fillRect(margin * scale, fy, tinted.width - margin * 2 * scale, Math.max(1, scale * 0.6));
-    c.fillStyle = opts.theme === 'dark' ? '#a8a29e' : opts.theme === 'sepia' ? '#7a6a50' : '#78716c';
+    c.fillStyle = FOOTER_INK[opts.theme];
     c.font = `${Math.round(9.5 * scale)}px Georgia, 'Times New Roman', serif`;
     c.textBaseline = 'middle';
     let text = opts.footer;
@@ -167,7 +175,6 @@ export async function exportImage(doc: PDFDocumentProxy, range: ClipRange, opts:
   }
   const blob = await new Promise<Blob | null>((res) => tinted.toBlob(res, 'image/png'));
   tinted.width = 0;
-  if (out !== tinted) out.width = 0;
   if (!blob) throw new Error("Couldn't create the image.");
   return blob;
 }

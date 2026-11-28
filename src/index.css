@@ -1,5 +1,5 @@
 @import 'tailwindcss';
-@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *, [data-theme=black], [data-theme=black] *));
 
 @theme inline {
   --color-bg: var(--bg);
@@ -53,6 +53,21 @@
   --accent-fg: #1c1917;
   --chrome: #161514;
   --reader-bg: #121212;
+  color-scheme: dark;
+}
+/* AMOLED: true black wherever there's no content, so OLED pixels switch off; surfaces stay
+   just off-black so sheets and buttons still read as layers. */
+:root[data-theme='black'] {
+  --bg: #000000;
+  --surface: #0d0d0d;
+  --surface-2: #1a1a1a;
+  --fg: #e5e5e5;
+  --muted: #a3a3a3;
+  --line: rgb(229 229 229 / 0.12);
+  --accent: #f59e0b;
+  --accent-fg: #000000;
+  --chrome: #000000;
+  --reader-bg: #000000;
   color-scheme: dark;
 }
 
@@ -318,7 +333,7 @@ button {
   background-repeat: no-repeat;
   background-position: center top;
 }
-/* Plain opaque bitmap: dark/sepia are baked in when the page renders, so no CSS filter here. */
+/* Plain opaque bitmap: dark/black/sepia are baked in when the page renders, so no CSS filter here. */
 .pdf-canvas {
   position: absolute;
   inset: 0;
