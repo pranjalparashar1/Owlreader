@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 import type { ReaderTheme } from '../types';
 import type { LookupMode, Settings } from '../lib/settings';
-import { MinusIcon, PagesIcon, PlusIcon, ScrollIcon } from './icons';
+import { ChevronRight, MinusIcon, PagesIcon, PlusIcon, ScissorsIcon, ScrollIcon } from './icons';
 
 /** Effective X-Ray state for this book: off everywhere, This Page on demand, or Whole Book indexed. */
 export type XrayState = 'off' | 'page' | 'book';
@@ -45,6 +45,8 @@ interface Props {
   onXray: (state: XrayState) => void;
   /** Whole-book indexing progress, when indexing is on. */
   indexProgress?: { indexed: number; total: number } | null;
+  /** Open this book's saved clips. */
+  onClips: () => void;
 }
 
 /** Reading settings popover: theme, layout (Pages / Scroll) and zoom. */
@@ -60,6 +62,7 @@ export default function ReaderSettings({
   xray,
   onXray,
   indexProgress,
+  onClips,
 }: Props) {
   useEffect(() => {
     if (!open) return;
@@ -93,6 +96,15 @@ export default function ReaderSettings({
           transition: 'transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 140ms ease-out',
         }}
       >
+        <button
+          onClick={onClips}
+          className="mb-1 flex w-full items-center gap-2.5 rounded-xl bg-surface-2 px-3.5 py-2.5 text-left text-[15px] font-medium active:bg-line"
+        >
+          <ScissorsIcon size={18} className="text-accent" />
+          <span className="flex-1">Clips</span>
+          <ChevronRight size={16} className="text-muted" />
+        </button>
+
         <Label>Theme</Label>
         <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label="Theme">
           {THEMES.map((t) => (

@@ -1,7 +1,9 @@
 import type { BookRecord, ReaderLocation, ReaderTheme, ReadingProgress } from '../types';
+import type { PDFDocumentProxy } from '../lib/pdfjs';
 
 export interface ReaderHandle {
-  goToPage(page: number): void; // 1-indexed
+  /** 1-indexed. `frac` (Scroll mode) lands that far down the page instead of at its top. */
+  goToPage(page: number, frac?: number): void;
   next(): void;
   prev(): void;
   zoom(dir: 1 | -1 | 0): void; // 0 = fit width
@@ -12,6 +14,8 @@ export interface ReaderHandle {
    * rendered, never mid-scroll): for background work like whole-book X-Ray indexing.
    */
   getPageText(page: number, opts?: { idle?: boolean }): Promise<string>;
+  /** The open pdf.js document, for on-demand tools (Clip & Export). */
+  getDocument(): PDFDocumentProxy | null;
 }
 
 export interface ReaderProps {

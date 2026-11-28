@@ -103,3 +103,28 @@ export interface BookIndexRecord {
   entities: Record<string, BookEntity>;
   updatedAt: number;
 }
+
+/** A point in the book: a page and how far down it (0 = top edge, 1 = bottom edge). */
+export interface BookPoint {
+  page: number;
+  y: number;
+}
+
+/** A clipped passage, as logical coordinates only (never bitmaps). */
+export interface ClipRange {
+  start: BookPoint;
+  end: BookPoint;
+}
+
+/** A saved clip: a few hundred bytes, re-exported on demand. */
+export interface ClipRecord {
+  id: string;
+  bookId: string;
+  startPage: number;
+  startY: number;
+  endPage: number;
+  endY: number;
+  title: string;
+  previewText: string;
+  createdAt: number;
+}

@@ -394,3 +394,66 @@ button {
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
+
+/* Clip Mode (1.7): only exists while clipping */
+.clip-tint {
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow:
+    inset 0 2px 0 var(--accent),
+    inset 0 -2px 0 var(--accent);
+  will-change: transform;
+}
+.clip-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 0;
+  will-change: transform;
+}
+.clip-knob {
+  position: absolute;
+  /* the end knob hangs below its line, the start knob above, so neither covers clipped text */
+  top: 6px;
+  right: max(14px, env(safe-area-inset-right));
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  box-shadow:
+    0 0 0 3px var(--surface),
+    0 6px 18px -4px rgb(0 0 0 / 0.45);
+  touch-action: none;
+  cursor: grab;
+}
+.clip-handle[data-handle='start'] .clip-knob {
+  top: -50px;
+  right: auto;
+  left: max(14px, env(safe-area-inset-left));
+}
+.clip-tag {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: var(--fg);
+  color: var(--bg);
+}
+.clip-tag:empty {
+  display: none;
+}
+.clip-handle[data-off='below'] .clip-tag {
+  top: -50px;
+}

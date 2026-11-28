@@ -123,6 +123,14 @@ export const ReturnIcon = (p: P) => (
   </svg>
 );
 
+export const ScissorsIcon = (p: P) => (
+  <svg {...base(p)}>
+    <circle cx="6" cy="6.5" r="2.5" />
+    <circle cx="6" cy="17.5" r="2.5" />
+    <path d="M8.2 7.8 20 18M8.2 16.2 20 6" />
+  </svg>
+);
+
 export function OwlMark({ size = 28 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 512 512" aria-hidden>

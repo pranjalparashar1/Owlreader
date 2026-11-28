@@ -1,11 +1,12 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
-import type { BookIndexRecord, BookRecord, LookupResult, ReadingProgress } from '../types';
+import type { BookIndexRecord, BookRecord, ClipRecord, LookupResult, ReadingProgress } from '../types';
 
 interface OwlDB extends DBSchema {
   books: { key: string; value: BookRecord };
   files: { key: string; value: { bookId: string; data: ArrayBuffer; name: string; type: string } };
   lookupCache: { key: string; value: LookupResult & { key: string; usedAt?: number } };
   bookIndex: { key: string; value: BookIndexRecord };
+  clips: { key: string; value: ClipRecord; indexes: { bookId: string } };
 }
 
 /** Stores that hold per-book data: deleting a book clears its rows in all of them, in one transaction. */
@@ -14,9 +15,9 @@ const BOOK_STORES = ['books', 'files', 'bookIndex'] as const;
 let dbPromise: Promise<IDBPDatabase<OwlDB>> | null = null;
 
 function db() {
-  // v1: books, files, lookupCache. v2 (1.6.1): bookIndex for X-Ray. Upgrades only ever add stores,
+  // v1: books, files, lookupCache. v2 (1.6.1): bookIndex for X-Ray. v3 (1.7): clips. Upgrades only ever add stores,
   // so books, files and saved lookups from earlier versions are kept as they are.
-  dbPromise ??= openDB<OwlDB>('owlreader', 2, {
+  dbPromise ??= openDB<OwlDB>('owlreader', 3, {
     upgrade(d, oldVersion) {
       if (oldVersion < 1) {
         d.createObjectStore('books', { keyPath: 'id' });
@@ -24,6 +25,7 @@ function db() {
         d.createObjectStore('lookupCache', { keyPath: 'key' });
       }
       if (oldVersion < 2) d.createObjectStore('bookIndex', { keyPath: 'bookId' });
+      if (oldVersion < 3) d.createObjectStore('clips', { keyPath: 'id' }).createIndex('bookId', 'bookId');
     },
     // another tab (or a test) holding an older connection mustn't block the upgrade forever
     blocking() {
@@ -57,8 +59,26 @@ export async function getBookFile(bookId: string) {
 
 export async function deleteBook(bookId: string) {
   const d = await db();
-  const tx = d.transaction(BOOK_STORES, 'readwrite');
-  await Promise.all([...BOOK_STORES.map((s) => tx.objectStore(s).delete(bookId)), tx.done]);
+  const tx = d.transaction([...BOOK_STORES, 'clips'], 'readwrite');
+  const clipKeys = await tx.objectStore('clips').index('bookId').getAllKeys(bookId);
+  await Promise.all([
+    ...BOOK_STORES.map((s) => tx.objectStore(s).delete(bookId)),
+    ...clipKeys.map((k) => tx.objectStore('clips').delete(k)),
+    tx.done,
+  ]);
+}
+
+export async function listClips(bookId: string): Promise<ClipRecord[]> {
+  const clips = await (await db()).getAllFromIndex('clips', 'bookId', bookId);
+  return clips.sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export async function putClip(clip: ClipRecord) {
+  await (await db()).put('clips', clip);
+}
+
+export async function deleteClip(id: string) {
+  await (await db()).delete('clips', id);
 }
 
 /** Merges fields into a book record (context tag, X-Ray opt-in). */
