@@ -603,9 +603,25 @@ button {
   background: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
-/* Fit text (1.8.2): the page margins sit off screen. They're clipped, not scrollable, so a
-   sideways swipe always turns the page instead of panning to a margin first. */
-.fit-text .pdf-slot.is-live,
-.pdf-scrolled.fit-text {
+/* Fit text (1.8.3): the page margins sit off screen. The page is shifted left (marginLeft) inside
+   a box exactly as wide as the screen that clips with overflow: clip, which, unlike hidden, leaves
+   nothing to scroll. iOS still lets a finger pan an overflow-x: hidden box sideways (that was the
+   1.8.2 wobble), so at fit the page can only move along the reading axis. */
+.fit-text .pdf-slot-inner,
+.fit-text .pdf-track {
+  overflow-x: clip;
+  padding-left: 0;
+  padding-right: 0;
+  justify-content: flex-start;
+  align-items: flex-start;
+}
+.fit-text .pdf-slot.is-live {
   overflow-x: hidden;
+  overscroll-behavior-x: none;
+}
+.pdf-scrolled.fit-text,
+.fit-text .pdf-scrolled {
+  overflow-x: hidden;
+  overscroll-behavior-x: none;
+  touch-action: pan-y; /* vertical only; pinch still reaches our handler as touch events */
 }
