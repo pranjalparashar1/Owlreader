@@ -401,10 +401,6 @@ const PdfReader = memo(
     }, [textBox, viewport.w, availW]);
     const zoom = autoFit ? fitZoom : manualZoom;
     const fitting = autoFit && fitZoom > 1;
-    const fittingRef = useRef(fitting);
-    fittingRef.current = fitting;
-    const textBoxRef = useRef(textBox);
-    textBoxRef.current = textBox;
     // a zoom that isn't a pinch (fit text arriving, rotating, the Fit button) keeps the reading spot
     const lastZoom = useRef(zoom);
     if (lastZoom.current !== zoom) {
@@ -525,20 +521,6 @@ const PdfReader = memo(
       }
       locate();
     }, [viewport, zoom, sizes, paged, numPages, locate]);
-
-    // ---- fit text: centre the text column in each live page (margins sit off screen, clipped)
-    useLayoutEffect(() => {
-      const el = scrollerRef.current;
-      const tb = textBoxRef.current;
-      if (!el || !fitting || !tb) return;
-      const centre = (pageEl: HTMLElement | null | undefined, container: HTMLElement | null | undefined) => {
-        if (!pageEl || !container) return;
-        const left = Math.round(pageEl.offsetLeft + ((tb.x0 + tb.x1) / 2) * pageEl.offsetWidth - container.clientWidth / 2);
-        if (Math.abs(container.scrollLeft - left) > 1) container.scrollLeft = left;
-      };
-      if (paged) for (let n = range[0]; n <= range[1]; n++) centre(pageRefs.current[n - 1], slotRefs.current[n - 1]);
-      else centre(pageRefs.current[page - 1], el);
-    });
 
     // ---- scroll handling. While the finger or momentum is moving we do *nothing* but note
     // that we're scrolling: no React state, no DOM changes, no pdf.js work. iOS scrolls on its
@@ -1032,6 +1014,7 @@ const PdfReader = memo(
     const renderPage = (i: number) => {
       const n = i + 1;
       const { w, h } = cssSize(i);
+      const tb = fitting ? textBox : null;
       const node = (
         <PdfPage
           key={n}
@@ -1052,6 +1035,7 @@ const PdfReader = memo(
           onRealSize={reportSize}
           onPainted={onPainted}
           prepared={prepared.current}
+          shift={tb ? Math.round(viewport.w / 2 - ((tb.x0 + tb.x1) / 2) * w) : undefined}
         />
       );
       if (!paged) return node;
@@ -1065,7 +1049,7 @@ const PdfReader = memo(
           // own native scroll view, and hundreds of them make the carousel stutter
           className={isActive(n) ? 'pdf-slot is-live' : 'pdf-slot'}
         >
-          <div className="pdf-slot-inner" style={{ width: Math.max(viewport.w, w + PAD * 2) }}>
+          <div className="pdf-slot-inner" style={{ width: fitting ? viewport.w : Math.max(viewport.w, w + PAD * 2) }}>
             {node}
           </div>
         </div>
@@ -1081,6 +1065,7 @@ const PdfReader = memo(
       if (!ready || height <= 0) return null;
       const { w, h } = cssSize(0);
       const bg = PAGE_BG[theme];
+      const tb = fitting ? textBox : null;
       return (
         <div
           aria-hidden
@@ -1089,6 +1074,7 @@ const PdfReader = memo(
             height,
             backgroundImage: `repeating-linear-gradient(to bottom, ${bg} 0, ${bg} ${h}px, transparent ${h}px, transparent ${h + GAP}px)`,
             backgroundSize: `${w}px 100%`,
+            backgroundPosition: tb ? `${Math.round(viewport.w / 2 - ((tb.x0 + tb.x1) / 2) * w)}px top` : undefined,
           }}
         />
       );
@@ -1108,7 +1094,11 @@ const PdfReader = memo(
           {paged ? (
             pageNodes
           ) : (
-            <div ref={trackRef} className="pdf-track" style={{ width: Math.max(viewport.w, geo.maxW + PAD * 2) }}>
+            <div
+              ref={trackRef}
+              className="pdf-track"
+              style={{ width: fitting ? viewport.w : Math.max(viewport.w, geo.maxW + PAD * 2) }}
+            >
               {ready && spacer(geo.tops[mountLo - 1])}
               {pageNodes}
               {ready && spacer(geo.tops[numPages] - geo.tops[mountHi])}
@@ -1151,6 +1141,8 @@ interface PageProps {
   onPainted: (num: number, canvas: () => HTMLCanvasElement | null, theme: ReaderTheme) => void;
   /** Canvases already drawn for a theme that's about to apply (see prepareTheme). */
   prepared: Map<number, { key: string; canvas: HTMLCanvasElement }>;
+  /** Fit text: left offset that centres the text column; the margins hang off screen, clipped. */
+  shift?: number;
 }
 
 /**
@@ -1178,6 +1170,7 @@ const PdfPage = memo(function PdfPage({
   onRealSize,
   onPainted,
   prepared,
+  shift,
 }: PageProps) {
   const boxRef = useRef<HTMLDivElement | null>(null);
   const textRef = useRef<HTMLDivElement>(null);
@@ -1320,6 +1313,7 @@ const PdfPage = memo(function PdfPage({
       style={{
         width,
         height,
+        marginLeft: shift,
         backgroundColor: PAGE_BG[theme],
         backgroundImage: preview ? `url(${preview})` : undefined,
         backgroundSize: '100% 100%',
