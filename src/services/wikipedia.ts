@@ -62,8 +62,6 @@ export function normalizeQuery(raw: string): string {
   return q.trim();
 }
 
-export const cacheKey = (q: string) => normalizeQuery(q).toLowerCase();
-
 export function stripHtml(html: string): string {
   const text = html.replace(/<[^>]*>/g, '');
   // decode the few entities the search API emits
@@ -242,7 +240,7 @@ export function scoreCandidate(haystack: string, terms: readonly string[]): numb
 
 /**
  * Orders a result's candidates by how well they match what's around the word on the page (the
- * X-Ray entities or the nearby names), keeping Wikipedia's order between equals, and keeps the
+ * names near the selection), keeping Wikipedia's order between equals, and keeps the
  * first few. Runs on every display, so the same cached list fits each page it's looked up from.
  */
 export function rankCandidates(result: LookupResult, terms: readonly string[] = []): LookupResult {

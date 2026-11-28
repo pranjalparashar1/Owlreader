@@ -1,9 +1,8 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import type { BookIndexRecord, BookRecord, ClipRange, ClipRecord, ReaderLocation, ReaderTheme, ReadingProgress } from '../types';
-import { getBookFile, getBookIndex, touchBook, updateBook, updateProgress } from '../db/libraryDb';
+import type { BookRecord, ClipRange, ClipRecord, ReaderLocation, ReaderTheme, ReadingProgress } from '../types';
+import { getBookFile, touchBook, updateProgress } from '../db/libraryDb';
 import { nearbyTerms, seedContextTag } from '../lib/terms';
-import { findEntity } from '../features/xray/find';
 import { comparePoints, pointAt } from '../features/excerpt/points';
 import { clearTextSelection, restoreSelectionRange, saveSelectionRange, useTextSelection } from '../hooks/useTextSelection';
 import { useOrientation } from '../hooks/useOrientation';
@@ -12,11 +11,11 @@ import { prefersReducedMotion } from '../hooks/useFocusTrap';
 import type { Settings } from '../lib/settings';
 import LookupPill from './LookupPill';
 import LookupDrawer, { type LookupRequest } from './LookupDrawer';
-import ReaderSettings, { type XrayState } from './ReaderSettings';
+import ReaderSettings from './ReaderSettings';
 import ChapterMenu from './ChapterMenu';
 import { ErrorScreen } from './ErrorBoundary';
 import type { OutlineItem, ReaderHandle } from './readerTypes';
-import { BackIcon, ChevronDown, CloseIcon, FitWidthIcon, GearIcon, ReturnIcon, ScissorsIcon, XrayIcon } from './icons';
+import { BackIcon, ChevronDown, GearIcon, ScissorsIcon } from './icons';
 
 interface Props {
   book: BookRecord;
@@ -55,10 +54,6 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   /** The theme being drawn ahead of a switch: the swatch moves at once, the screen when ready. */
   const [pendingTheme, setPendingTheme] = useState<ReaderTheme | null>(null);
   const [pageTerms, setPageTerms] = useState<string[]>([]);
-  const [wholeBook, setWholeBook] = useState(!!book.xrayWholeBook);
-  const [bookIndex, setBookIndex] = useState<BookIndexRecord | null>(null);
-  const [returnTo, setReturnTo] = useState<number | null>(null);
-  const [xrayBusy, setXrayBusy] = useState(false);
   /** Clip Mode: null = reading; otherwise the range to start from (null = what's on screen). */
   const [clip, setClip] = useState<{ initial: ClipRange | null } | null>(null);
   const [exportRange, setExportRange] = useState<ClipRange | null>(null);
@@ -184,77 +179,6 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
     };
   }, [docReady]);
 
-  // ---- X-Ray. Off = nothing below runs. Whole book = index in idle chunks (lazily loaded).
-  const xrayOn = settings.xray === 'on';
-  const xrayState: XrayState = !xrayOn ? 'off' : wholeBook ? 'book' : 'page';
-  const onXray = (s: XrayState) => {
-    if (s !== 'off' && !xrayOn) onSettings({ xray: 'on' });
-    if (s === 'off') onSettings({ xray: 'off' });
-    const wb = s === 'book' ? true : s === 'page' ? false : wholeBook;
-    if (wb !== wholeBook) {
-      setWholeBook(wb);
-      updateBook(book.id, { xrayWholeBook: wb }).catch(() => {});
-    }
-  };
-  // an index built earlier still answers "In This Book" in This Page mode
-  useEffect(() => {
-    if (!xrayOn) return;
-    let alive = true;
-    getBookIndex(book.id)
-      .then((r) => alive && r && setBookIndex(r))
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [book.id, xrayOn]);
-  const pageCountKnown = location?.pageCount ?? 0;
-  useEffect(() => {
-    if (!xrayOn || !wholeBook || !pageCountKnown) return;
-    let stop: (() => void) | null = null;
-    let cancelled = false;
-    import('../features/xray/indexer').then(({ startIndexing }) => {
-      if (cancelled) return;
-      stop = startIndexing({
-        bookId: book.id,
-        totalPages: pageCountKnown,
-        getText: (n) => readerRef.current?.getPageText(n, { idle: true }) ?? Promise.reject(new Error('closed')),
-        onProgress: setBookIndex,
-      });
-    });
-    return () => {
-      cancelled = true;
-      stop?.();
-    };
-  }, [book.id, xrayOn, wholeBook, pageCountKnown]);
-  const inBook = useCallback((term: string) => (xrayOn ? findEntity(bookIndex, term) : undefined), [xrayOn, bookIndex]);
-
-  const openXray = async () => {
-    const page = locationRef.current?.page ?? 1;
-    setXrayBusy(true);
-    try {
-      const text = (await readerRef.current?.getPageText(page)) ?? '';
-      const { extractPage } = await import('../features/xray/client');
-      const entities = await extractPage(text);
-      setPageTerms([]);
-      setLookupReq((r) => ({ query: '', id: (r?.id ?? 0) + 1, xray: { page, entities } }));
-    } catch {
-      setLookupReq((r) => ({ query: '', id: (r?.id ?? 0) + 1, xray: { page, entities: [] } }));
-    } finally {
-      setXrayBusy(false);
-    }
-  };
-
-  // ---- jump from an "In This Book" card, with a way back
-  const onJump = (page: number) => {
-    const from = locationRef.current?.page;
-    setReturnTo((r) => r ?? from ?? null);
-    closeLookup();
-    readerRef.current?.goToPage(page);
-  };
-  const goBack = () => {
-    if (returnTo !== null) readerRef.current?.goToPage(returnTo);
-    setReturnTo(null);
-  };
   const clipOpen = useRef(false);
   clipOpen.current = !!clip;
   const blockRef = useRef(false);
@@ -430,17 +354,6 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
             >
               <ScissorsIcon size={21} />
             </button>
-            {xrayOn && (
-              <button
-                onClick={openXray}
-                disabled={xrayBusy || !location}
-                aria-label="X-Ray this page"
-                title="X-Ray"
-                className="flex h-11 w-9 items-center justify-center rounded-full text-accent active:opacity-50 disabled:opacity-40"
-              >
-                <XrayIcon size={21} />
-              </button>
-            )}
             <button
               onClick={() => setSettingsOpen((o) => !o)}
               aria-label="Reading settings"
@@ -504,9 +417,6 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
           </div>
           <div className="mt-1 flex items-center justify-between gap-2">
             <div className="min-w-0 flex-1 truncate text-[12px] text-muted">{scrubLabel}</div>
-            <ToolButton label="Fit text" onClick={() => readerRef.current?.zoom(0)}>
-              <FitWidthIcon size={18} />
-            </ToolButton>
             <div className="flex items-center gap-1">
               <ToolButton label="Previous page" onClick={() => readerRef.current?.prev()}>
                 <BackIcon size={18} />
@@ -518,29 +428,6 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
           </div>
         </div>
       </footer>
-
-      {returnTo !== null && !lookupReq && (
-        <div
-          className="fixed z-40 flex items-center rounded-full bg-fg text-bg shadow-[0_8px_28px_-6px_rgb(0_0_0/0.45)]"
-          style={{
-            left: '50%',
-            top: 'calc(14px + env(safe-area-inset-top) * 1.25)',
-            transform: `translateX(-50%) translateY(${chrome ? 50 : 0}px)`,
-            transition: 'transform 420ms var(--ease-ios)',
-          }}
-        >
-          <button
-            onClick={goBack}
-            aria-label={`Return to p. ${returnTo}`}
-            className="flex items-center gap-1.5 py-2 pr-2 pl-3.5 text-[14px] font-medium"
-          >
-            <ReturnIcon size={16} className="text-accent" /> p. {returnTo}
-          </button>
-          <button onClick={() => setReturnTo(null)} className="py-2 pr-3 pl-1 opacity-70" aria-label="Dismiss return">
-            <CloseIcon size={15} />
-          </button>
-        </div>
-      )}
 
       {selection.any && !lookupReq && !clip && !exportRange && (
         <LookupPill
@@ -560,9 +447,6 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
         pendingTheme={pendingTheme}
         onZoom={(dir) => readerRef.current?.zoom(dir)}
         onClose={() => setSettingsOpen(false)}
-        xray={xrayState}
-        onXray={onXray}
-        indexProgress={wholeBook && bookIndex ? { indexed: bookIndex.indexedPages, total: bookIndex.totalPages } : null}
         onClips={() => {
           setSettingsOpen(false);
           setClipsOpen(true);
@@ -623,8 +507,6 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
         onClose={closeLookup}
         contextTag={contextTag.trim() || undefined}
         pageTerms={pageTerms}
-        inBook={xrayOn ? inBook : undefined}
-        onJump={onJump}
       />
     </div>
   );

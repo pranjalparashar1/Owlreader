@@ -88,12 +88,6 @@ export const TrashIcon = (p: P) => (
     <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" />
   </svg>
 );
-/** SF Symbols arrow.left.and.right.text.vertical-ish: fit the text column to the screen. */
-export const FitWidthIcon = (p: P) => (
-  <svg {...base(p)}>
-    <path d="M9 7h6M9 10.5h6M9 14h6M9 17.5h4M2.5 12h3M18.5 12h3M4 10l-1.5 2L4 14M20 10l1.5 2-1.5 2" />
-  </svg>
-);
 export const CloudOffIcon = (p: P) => (
   <svg {...base(p)}>
     <path d="M3 3l18 18M8 7.5A5.5 5.5 0 0 1 17.4 10H18a4 4 0 0 1 2.3 7.3M17 19H7a4.5 4.5 0 0 1-1.4-8.8" />
@@ -110,12 +104,6 @@ export const StorageIcon = (p: P) => (
     <path d="M5 6v12c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8V6M5 12c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8" />
   </svg>
 );
-export const BookIcon = (p: P) => (
-  <svg {...base(p)}>
-    <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5v-15Z" />
-    <path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5" />
-  </svg>
-);
 export const ScrollIcon = (p: P) => (
   <svg {...base(p)}>
     <path d="M7 4h10M7 20h10M12 8v8M9 13l3 3 3-3" />
@@ -125,22 +113,6 @@ export const PagesIcon = (p: P) => (
   <svg {...base(p)}>
     <rect x="3.5" y="5" width="7.5" height="14" rx="1" />
     <rect x="13" y="5" width="7.5" height="14" rx="1" />
-  </svg>
-);
-
-/** X-Ray: a page with a lens over it. */
-export const XrayIcon = (p: P) => (
-  <svg {...base(p)}>
-    <path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21H11" />
-    <path d="M8.5 8h6M8.5 11.5h3" />
-    <circle cx="16" cy="15.5" r="3.5" />
-    <path d="m18.6 18.1 2.4 2.4" />
-  </svg>
-);
-export const ReturnIcon = (p: P) => (
-  <svg {...base(p)}>
-    <path d="M9 14 4 9l5-5" />
-    <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
   </svg>
 );
 

@@ -9,11 +9,8 @@ export interface ReaderHandle {
   zoom(dir: 1 | -1 | 0): void; // 0 = fit the text column to the screen
   /** Tiny render of a page for the scrubber preview; null if superseded or failed. */
   renderThumbnail(page: number, widthPx: number): Promise<HTMLCanvasElement | null>;
-  /**
-   * A page's text from pdf.js. `idle` waits for the reader's idle queue (after visible pages have
-   * rendered, never mid-scroll): for background work like whole-book X-Ray indexing.
-   */
-  getPageText(page: number, opts?: { idle?: boolean }): Promise<string>;
+  /** A page's text from pdf.js (for the lookup's context chips). */
+  getPageText(page: number): Promise<string>;
   /** The open pdf.js document, for on-demand tools (Clip & Export). */
   getDocument(): PDFDocumentProxy | null;
   /** The PDF's chapters (its outline), flattened; [] when it has none. */

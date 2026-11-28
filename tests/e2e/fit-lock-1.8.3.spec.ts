@@ -72,6 +72,7 @@ test('zoomed past fit, the page pans sideways again', async ({ page }) => {
   await openChronicle(page);
   const panel = await openSettings(page);
   await panel.getByRole('button', { name: 'Zoom in' }).click();
+  await expect(panel.getByRole('button', { name: /Default zoom/ })).toHaveText('125%'); // animated, then laid out
   await closeSettings(page);
   await waitForText(page);
   const s = await probe(page, true);

@@ -1,31 +1,32 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
-import type { BookIndexRecord, BookRecord, ClipRecord, LookupResult, ReadingProgress } from '../types';
+import type { BookRecord, ClipRecord, LookupResult, ReadingProgress } from '../types';
 
 interface OwlDB extends DBSchema {
   books: { key: string; value: BookRecord };
   files: { key: string; value: { bookId: string; data: ArrayBuffer; name: string; type: string } };
   lookupCache: { key: string; value: LookupResult & { key: string; usedAt?: number } };
-  bookIndex: { key: string; value: BookIndexRecord };
   clips: { key: string; value: ClipRecord; indexes: { bookId: string } };
 }
 
 /** Stores that hold per-book data: deleting a book clears its rows in all of them, in one transaction. */
-const BOOK_STORES = ['books', 'files', 'bookIndex'] as const;
+const BOOK_STORES = ['books', 'files'] as const;
 
 let dbPromise: Promise<IDBPDatabase<OwlDB>> | null = null;
 
 function db() {
-  // v1: books, files, lookupCache. v2 (1.6.1): bookIndex for X-Ray. v3 (1.7): clips. Upgrades only ever add stores,
-  // so books, files and saved lookups from earlier versions are kept as they are.
-  dbPromise ??= openDB<OwlDB>('owlreader', 3, {
+  // v1: books, files, lookupCache. v2 (1.6.1): bookIndex for X-Ray. v3 (1.7): clips. v4 (1.8.4): X-Ray
+  // removed, so bookIndex is deleted. Books, files, saved lookups and clips are never touched.
+  dbPromise ??= openDB<OwlDB>('owlreader', 4, {
     upgrade(d, oldVersion) {
       if (oldVersion < 1) {
         d.createObjectStore('books', { keyPath: 'id' });
         d.createObjectStore('files', { keyPath: 'bookId' });
         d.createObjectStore('lookupCache', { keyPath: 'key' });
       }
-      if (oldVersion < 2) d.createObjectStore('bookIndex', { keyPath: 'bookId' });
       if (oldVersion < 3) d.createObjectStore('clips', { keyPath: 'id' }).createIndex('bookId', 'bookId');
+      // idb's typed schema no longer knows the store, hence the cast
+      if ((d.objectStoreNames as DOMStringList).contains('bookIndex'))
+        (d as unknown as IDBDatabase).deleteObjectStore('bookIndex');
     },
     // another tab (or a test) holding an older connection mustn't block the upgrade forever
     blocking() {
@@ -79,27 +80,6 @@ export async function putClip(clip: ClipRecord) {
 
 export async function deleteClip(id: string) {
   await (await db()).delete('clips', id);
-}
-
-/** Merges fields into a book record (context tag, X-Ray opt-in). */
-export async function updateBook(bookId: string, patch: Partial<Pick<BookRecord, 'contextTag' | 'xrayWholeBook'>>) {
-  const d = await db();
-  const tx = d.transaction('books', 'readwrite');
-  const book = await tx.store.get(bookId);
-  if (book) await tx.store.put({ ...book, ...patch });
-  await tx.done;
-}
-
-export async function getBookIndex(bookId: string) {
-  return (await db()).get('bookIndex', bookId);
-}
-
-export async function putBookIndex(record: BookIndexRecord) {
-  await (await db()).put('bookIndex', record);
-}
-
-export async function deleteBookIndex(bookId: string) {
-  await (await db()).delete('bookIndex', bookId);
 }
 
 export async function updateProgress(bookId: string, progress: ReadingProgress) {

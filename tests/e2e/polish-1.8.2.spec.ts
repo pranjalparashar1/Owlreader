@@ -28,9 +28,6 @@ test('opens at fit text: the text column fills the screen, margins clipped', asy
   expect(geo.left).toBeLessThan(40); // …and little margin left over
   expect(geo.vw - geo.right).toBeLessThan(40);
   expect(geo.overflowX).toBe('hidden'); // a sideways swipe turns the page, never pans to a margin
-
-  const panel = await openSettings(page);
-  await expect(panel.getByRole('button', { name: /Fit text to screen/ })).not.toHaveText('100%');
 });
 
 test('a theme change swaps the visible page in the same frame as the colours', async ({ page }) => {

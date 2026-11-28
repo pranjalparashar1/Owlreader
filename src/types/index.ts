@@ -20,14 +20,11 @@ export interface BookRecord {
    * and get a seed from their title when opened.
    */
   contextTag?: string;
-  /** X-Ray: the reader opted this book into whole-book indexing. */
-  xrayWholeBook?: boolean;
 }
 
 export interface ReadingProgress {
   percentage: number; // 0..100 for library display
   pdfPage?: number; // 1-indexed current page
-  pdfScale?: number; // Last zoom level (multiplier of fit-width; 1 = fit width)
 }
 
 export interface LookupCandidate {
@@ -80,33 +77,6 @@ export interface ReaderLocation {
 /** Books saved by older versions in a format this version can't open (read straight from IndexedDB). */
 export function isSupportedBook(book: { format?: unknown }): boolean {
   return book.format === 'pdf';
-}
-
-/** X-Ray: what kind of thing a term names (from the NLP tagger, or 'term' from the heuristics). */
-export type EntityKind = 'person' | 'place' | 'org' | 'term';
-
-export interface PageEntity {
-  label: string;
-  kind: EntityKind;
-  count: number;
-}
-
-export interface BookEntity {
-  label: string;
-  kind: EntityKind;
-  pages: number[];
-  firstPage: number;
-  firstSentence: string;
-}
-
-/** Whole-book X-Ray index, built in idle chunks and checkpointed so it survives app closes. */
-export interface BookIndexRecord {
-  bookId: string;
-  /** Pages 1…indexedPages are done. */
-  indexedPages: number;
-  totalPages: number;
-  entities: Record<string, BookEntity>;
-  updatedAt: number;
 }
 
 /** A point in the book: a page and how far down it (0 = top edge, 1 = bottom edge). */

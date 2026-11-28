@@ -1,6 +1,6 @@
 /**
- * Small, dependency-free text heuristics shared by the lookup context chips (main thread) and
- * the X-Ray worker: page text from pdf.js items, capitalised-term candidates, sentences.
+ * Small, dependency-free text heuristics for the lookup context chips: page text from pdf.js
+ * items and capitalised-term candidates.
  */
 
 /** Words that start sentences or headings far more often than they name anything. */
@@ -19,7 +19,7 @@ const STOP = new Set(
 const MONTHS_DAYS =
   /^(january|february|march|april|may|june|july|august|september|october|november|december|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i;
 
-export const isStopWord = (w: string) => STOP.has(w.toLowerCase()) || MONTHS_DAYS.test(w);
+const isStopWord = (w: string) => STOP.has(w.toLowerCase()) || MONTHS_DAYS.test(w);
 
 /** pdf.js text items → one string. Line-end hyphens are joined ("pack- aging" → "packaging"). */
 export function pageTextFromItems(items: ReadonlyArray<{ str?: string; hasEOL?: boolean }>): string {
@@ -41,7 +41,7 @@ export function pageTextFromItems(items: ReadonlyArray<{ str?: string; hasEOL?: 
  * Drops page furniture (page numbers, ALL-CAPS running headers) and ends short heading lines
  * with a full stop, so a heading doesn't run into the first sentence after it.
  */
-export function proseText(text: string): string {
+function proseText(text: string): string {
   const out: string[] = [];
   for (const raw of text.split('\n')) {
     const l = raw.trim();
@@ -56,13 +56,7 @@ export function proseText(text: string): string {
   return out.join('\n');
 }
 
-/** Splits text into sentences (good enough for "first mentioned" quotes). */
-export function sentences(text: string): string[] {
-  const flat = text.replace(/\s*\n\s*/g, ' ');
-  return (flat.match(/[^.!?]+(?:[.!?]+["'”’)\]]*|$)/g) ?? [flat]).map((s) => s.trim()).filter(Boolean);
-}
-
-export interface TermHit {
+interface TermHit {
   label: string;
   /** Character offset of the first occurrence in the text. */
   index: number;
@@ -79,7 +73,7 @@ const RUN = new RegExp(String.raw`${WORD}(?:[ ](?:of|de|von|van|da|la|the)?[ ]?$
  * and single capitalised words that appear mid-sentence (so "The" or "However" at a sentence start
  * don't count). Stop words are trimmed from either end.
  */
-export function capitalisedTerms(text: string): TermHit[] {
+function capitalisedTerms(text: string): TermHit[] {
   const out = new Map<string, TermHit>();
   for (const m of text.matchAll(RUN)) {
     let words = m[0].split(' ');

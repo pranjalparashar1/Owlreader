@@ -1,7 +1,7 @@
 {
   "name": "owlreader",
   "private": true,
-  "version": "1.8.3",
+  "version": "1.8.4",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,7 +14,6 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
-    "compromise": "14.19.0",
     "idb": "^8.0.4",
     "pdf-lib": "1.17.1",
     "pdfjs-dist": "^5.4.624",
