@@ -6,7 +6,7 @@ import { closeSettings, goToPage, importChronicle, openChronicle, openSettings, 
 const loaded = (page: Page, re: RegExp) =>
   page.evaluate((src) => performance.getEntriesByType('resource').some((e) => new RegExp(src).test(e.name)), re.source);
 const PDF_LIB = /\/pdf-[\w-]+\.js$/; // pdf-lib's chunk (pdf.js is "pdfjs-…")
-const EXCERPT = /\/(ClipOverlay|ExportSheet|ClipsSheet|layout|image)-[\w-]+\.js$/;
+const EXCERPT = /\/(ClipOverlay|ExportSheet|ClipsSheet|layout|image|compose)-[\w-]+\.js$/;
 
 async function bytes(d: Download) {
   return readFile((await d.path())!);
@@ -30,6 +30,10 @@ async function clipAcrossPages(page: Page) {
   const clipBtn = page.getByRole('button', { name: 'Clip from selection' });
   await expect(clipBtn).toBeVisible();
   await clipBtn.dispatchEvent('pointerdown');
+  // one tap from a selection goes straight to Export; Adjust opens the handles on the same range
+  const sheet = page.getByRole('dialog', { name: 'Export p. 5' });
+  await expect(sheet).toBeVisible();
+  await sheet.getByRole('button', { name: 'Adjust' }).click();
   const bar = page.getByRole('toolbar', { name: 'Clip passage' });
   await expect(bar.getByTestId('clip-span')).toHaveText('p. 5');
   // Clip Mode always clips in the vertical layout, so p. 6 is right below p. 5
@@ -94,8 +98,8 @@ test('clip across a page break, then export image, PDFs and Markdown', async ({ 
     return { w: c.width, h: c.height, longest };
   });
   expect(scan.w).toBeGreaterThan(600);
-  // a page break left in would be ~1000 px of blank paper at this scale; paragraph gaps are < 100
-  expect(scan.longest).toBeLessThan(110);
+  // a page break left in would be ~2/3 of the width in blank paper; paragraph gaps are far less
+  expect(scan.longest / scan.w).toBeLessThan(0.09);
   let dl = page.waitForEvent('download');
   await sheet.getByRole('link', { name: 'Download' }).click();
   let file = await dl;

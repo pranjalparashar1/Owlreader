@@ -1,15 +1,16 @@
 /** iOS share sheet when the browser can share files, otherwise null (callers offer a download). */
-export function canShareFile(file: File) {
+export function canShareFile(file: File | File[]) {
   try {
-    return !!navigator.canShare?.({ files: [file] });
+    return !!navigator.canShare?.({ files: Array.isArray(file) ? file : [file] });
   } catch {
     return false;
   }
 }
 
-export async function shareFile(file: File, title: string) {
+/** Several files (a carousel) go to the share sheet together, in order. */
+export async function shareFile(file: File | File[], title: string) {
   try {
-    await navigator.share({ files: [file], title });
+    await navigator.share({ files: Array.isArray(file) ? file : [file], title });
     return true;
   } catch (e) {
     // the reader closing the share sheet isn't an error

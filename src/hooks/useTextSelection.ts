@@ -2,19 +2,21 @@ import { useSyncExternalStore } from 'react';
 
 /** One selection store for the whole app, fed by the main document (the PDF text layer). */
 export interface SelectionState {
-  text: string; // normalized, 1..80 chars, or '' when nothing usable is selected
+  text: string; // normalized, 1..80 chars, or '' when nothing short enough to look up is selected
+  /** Something is selected, at any length (a whole passage still offers Clip). */
+  any: boolean;
 }
 
 const MAX_CHARS = 80;
 const HIDE_DELAY = 350; // keep the pill alive briefly so a tap that collapses the selection still lands
 
-let state: SelectionState = { text: '' };
+let state: SelectionState = { text: '', any: false };
 const listeners = new Set<() => void>();
 let hideTimer: number | undefined;
 let readTimer: number | undefined;
 
 function emit(next: SelectionState) {
-  if (next.text === state.text) return;
+  if (next.text === state.text && next.any === state.any) return;
   state = next;
   listeners.forEach((l) => l());
 }
@@ -24,8 +26,9 @@ function readSelection() {
   const raw = sel && !sel.isCollapsed ? sel.toString() : '';
   const text = raw.replace(/\s+/g, ' ').trim();
   window.clearTimeout(hideTimer);
-  if (text && text.length <= MAX_CHARS) emit({ text });
-  else hideTimer = window.setTimeout(() => emit({ text: '' }), text ? 0 : HIDE_DELAY);
+  if (text && text.length <= MAX_CHARS) emit({ text, any: true });
+  else if (text) emit({ text: '', any: true });
+  else hideTimer = window.setTimeout(() => emit({ text: '', any: false }), HIDE_DELAY);
 }
 
 function schedule() {
@@ -55,7 +58,7 @@ export function clearTextSelection() {
     /* ignore */
   }
   window.clearTimeout(hideTimer);
-  emit({ text: '' });
+  emit({ text: '', any: false });
 }
 
 export function getSelectionText() {

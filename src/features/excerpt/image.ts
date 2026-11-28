@@ -4,9 +4,7 @@
  * bands into one continuous image with even spacing, so a passage split across pages reads as one.
  */
 import type { PDFDocumentProxy } from '../../lib/pdfjs';
-import { PAGE_BG, isInverted, tintCanvas } from '../../lib/tint';
-import { pageImageMatrices, toCanvasSpace } from '../../lib/pageImages';
-import type { ClipRange, ReaderTheme } from '../../types';
+import type { ClipRange } from '../../types';
 import { pageLayout, slices, type PageLayout } from './layout';
 
 /** Inked bounds of a slice, as page fractions. */
@@ -16,12 +14,14 @@ export interface Trim {
   bottom: number;
   left: number;
   right: number;
+  /** Blank bands inside the slice, taller than a few lines (page fractions): collapsed in images. */
+  holes: Array<{ top: number; bottom: number }>;
   layout: PageLayout;
 }
 
 const INK = 235; // a pixel darker than this on any channel counts as ink
 
-async function render(doc: PDFDocumentProxy, n: number, scale: number) {
+export async function render(doc: PDFDocumentProxy, n: number, scale: number) {
   const page = await doc.getPage(n);
   const vp = page.getViewport({ scale });
   const canvas = document.createElement('canvas');
@@ -33,7 +33,7 @@ async function render(doc: PDFDocumentProxy, n: number, scale: number) {
 }
 
 /** Paint over running headers and page numbers so neither the trim nor the image keeps them. */
-function blankFurniture(canvas: HTMLCanvasElement, layout: PageLayout) {
+export function blankFurniture(canvas: HTMLCanvasElement, layout: PageLayout) {
   const ctx = canvas.getContext('2d')!;
   ctx.fillStyle = '#ffffff';
   for (const f of layout.furniture) {
@@ -42,35 +42,68 @@ function blankFurniture(canvas: HTMLCanvasElement, layout: PageLayout) {
   }
 }
 
-function inkBox(canvas: HTMLCanvasElement, y0: number, y1: number) {
+/** A blank band taller than this many lines inside a clip is closed up in the image. */
+export const HOLE_LINES = 3;
+const ASTRAY = 0.004; // ink outside the text column counts (a figure, a wide table) above this share of the slice
+
+/**
+ * The inked box of a band of the page. Left and right come from the text column when the page has
+ * text (`textX`, page fractions): a book's gutter shadow, a binding rule or a stray mark beside the
+ * column would otherwise pull one side out and leave the margins uneven. Ink outside the column
+ * still counts when there's enough of it to be a figure.
+ */
+function inkBox(canvas: HTMLCanvasElement, y0: number, y1: number, textX: { x0: number; x1: number } | null, minHole: number) {
   const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
   const w = canvas.width;
   const top = Math.max(0, Math.floor(y0));
   const h = Math.max(0, Math.min(canvas.height, Math.ceil(y1)) - top);
   if (!h) return null;
   const px = ctx.getImageData(0, top, w, h).data;
+  const cols = new Uint32Array(w);
+  const isInk = (i: number) => px[i] < INK || px[i + 1] < INK || px[i + 2] < INK;
+  for (let y = 0; y < h; y++) {
+    const row = y * w * 4;
+    for (let x = 0; x < w; x++) if (isInk(row + x * 4)) cols[x]++;
+  }
+  let inkL = 0;
+  while (inkL < w && !cols[inkL]) inkL++;
+  if (inkL === w) return null;
+  let inkR = w - 1;
+  while (inkR > inkL && !cols[inkR]) inkR--;
+  let left = inkL;
+  let right = inkR + 1;
+  if (textX) {
+    const tl = Math.max(0, Math.floor(textX.x0 * w) - 2);
+    const tr = Math.min(w, Math.ceil(textX.x1 * w) + 2);
+    // a figure is wide and dense; a gutter rule, crop mark or margin note is neither
+    const figure = (x0: number, x1: number) => {
+      let ink = 0;
+      let wide = 0;
+      for (let x = x0; x < x1; x++) {
+        ink += cols[x];
+        if (cols[x]) wide++;
+      }
+      return ink > w * h * ASTRAY && wide > Math.max(6, w * 0.04);
+    };
+    if (!figure(0, tl)) left = Math.max(inkL, tl);
+    if (!figure(tr, w)) right = Math.min(inkR + 1, tr);
+  }
   let first = -1;
   let last = -1;
-  let left = w;
-  let right = -1;
+  const holes: Array<{ top: number; bottom: number }> = [];
   for (let y = 0; y < h; y++) {
-    let rowInk = false;
     const row = y * w * 4;
-    for (let x = 0; x < w; x++) {
-      const i = row + x * 4;
-      if (px[i] < INK || px[i + 1] < INK || px[i + 2] < INK) {
-        rowInk = true;
-        if (x < left) left = x;
-        if (x > right) right = x;
+    for (let x = left; x < right; x++) {
+      if (isInk(row + x * 4)) {
+        if (first < 0) first = y;
+        else if (y - last - 1 >= minHole) holes.push({ top: top + last + 1, bottom: top + y });
+        last = y;
+        break;
       }
-    }
-    if (rowInk) {
-      if (first < 0) first = y;
-      last = y;
     }
   }
   if (first < 0) return null;
-  return { top: top + first, bottom: top + last + 1, left, right: right + 1 };
+  return { top: top + first, bottom: top + last + 1, left, right, holes };
 }
 
 /**
@@ -83,98 +116,39 @@ export async function trimSlices(doc: PDFDocumentProxy, range: ClipRange): Promi
     const layout = await pageLayout(doc, s.page);
     const { canvas } = await render(doc, s.page, 1);
     blankFurniture(canvas, layout);
-    const box = inkBox(canvas, s.top * canvas.height, s.bottom * canvas.height);
-    const { width: W, height: H } = canvas;
+    const inSlice = layout.lines.filter((l) => (l.top + l.bottom) / 2 >= s.top && (l.top + l.bottom) / 2 <= s.bottom);
+    const textX = inSlice.length
+      ? { x0: Math.min(...inSlice.map((l) => l.x0)), x1: Math.max(...inSlice.map((l) => l.x1)) }
+      : null;
+    const H = canvas.height;
+    const box = inkBox(canvas, s.top * H, s.bottom * H, textX, layout.pitch * H * HOLE_LINES);
+    const W = canvas.width;
     canvas.width = 0;
     if (!box) continue;
-    out.push({ page: s.page, top: box.top / H, bottom: box.bottom / H, left: box.left / W, right: box.right / W, layout });
+    out.push({
+      page: s.page,
+      top: box.top / H,
+      bottom: box.bottom / H,
+      left: box.left / W,
+      right: box.right / W,
+      holes: box.holes.map((g) => ({ top: g.top / H, bottom: g.bottom / H })),
+      layout,
+    });
   }
   return out;
 }
 
-const ENDS_SENTENCE = /[.!?:;"”’)\]]$/;
+export const ENDS_SENTENCE = /[.!?:;"”’)\]]$/;
 
 /** Space between two stitched bands: a line gap mid-paragraph, a paragraph gap between paragraphs. */
-function gapBetween(a: Trim, b: Trim) {
+export function gapBetween(a: Trim, b: Trim) {
   const lastA = [...a.layout.lines].reverse().find((l) => (l.top + l.bottom) / 2 <= a.bottom);
   const firstB = b.layout.lines.find((l) => (l.top + l.bottom) / 2 >= b.top);
   const pitchPt = a.layout.pitch * a.layout.height;
   const lineGap = Math.max(2, pitchPt - a.layout.bodySize * 0.95);
   const indent = firstB ? firstB.x0 - b.layout.left > (b.layout.bodySize * 0.8) / b.layout.width : false;
+  const heading = !!firstB && firstB.size > b.layout.bodySize * 1.15;
+  if (heading) return lineGap + pitchPt * 1.2; // a new chapter or section keeps its space above
   const newPara = !lastA || !firstB || (ENDS_SENTENCE.test(lastA.text) && indent);
   return newPara ? lineGap + pitchPt * 0.6 : lineGap; // in points
-}
-
-export interface ImageOptions {
-  theme: ReaderTheme;
-  /** Attribution text for the footer, or null for none. */
-  footer: string | null;
-  /** Width of a full page in the output, in px (≈2× a phone's CSS width). */
-  pageWidthPx?: number;
-}
-
-const FOOTER_RULE: Record<ReaderTheme, string> = { light: '#e7e2da', sepia: '#d9ccb0', dark: '#3a3a3a', black: '#262626' };
-const FOOTER_INK: Record<ReaderTheme, string> = { light: '#78716c', sepia: '#7a6a50', dark: '#a8a29e', black: '#a3a3a3' };
-
-const MAX_PIXELS = 15_000_000; // iOS caps a canvas at 16.7 MP
-
-export async function exportImage(doc: PDFDocumentProxy, range: ClipRange, opts: ImageOptions): Promise<Blob> {
-  const trims = await trimSlices(doc, range);
-  if (!trims.length) throw new Error('Nothing to export: the clip is empty.');
-  const left = Math.min(...trims.map((t) => t.left));
-  const right = Math.max(...trims.map((t) => t.right));
-  const ptW = trims[0].layout.width;
-  let scale = (opts.pageWidthPx ?? 1400) / ptW;
-  const gapsPt = trims.slice(1).map((t, i) => gapBetween(trims[i], t));
-  const heightPt = trims.reduce((s, t) => s + (t.bottom - t.top) * t.layout.height, 0) + gapsPt.reduce((s, g) => s + g, 0);
-  const margin = 28; // pt
-  const footerPt = opts.footer ? 34 : 0;
-  const wPt = (right - left) * ptW + margin * 2;
-  const hPt = heightPt + margin * 2 + footerPt;
-  scale = Math.min(scale, Math.sqrt(MAX_PIXELS / (wPt * hPt)));
-
-  const out = document.createElement('canvas');
-  out.width = Math.round(wPt * scale);
-  out.height = Math.round(hPt * scale);
-  const ctx = out.getContext('2d')!;
-  ctx.fillStyle = PAGE_BG[opts.theme];
-  ctx.fillRect(0, 0, out.width, out.height);
-
-  let y = margin * scale;
-  for (let i = 0; i < trims.length; i++) {
-    const t = trims[i];
-    const r = await render(doc, t.page, scale);
-    blankFurniture(r.canvas, t.layout);
-    // each page is tinted on its own so its photos can be kept (see tint.ts)
-    const imgs = isInverted(opts.theme) ? toCanvasSpace(await pageImageMatrices(r.page, r.task), r.transform) : [];
-    const page = tintCanvas(r.canvas, opts.theme, imgs);
-    const sx = left * page.width;
-    const sy = t.top * page.height;
-    const sw = (right - left) * page.width;
-    const sh = (t.bottom - t.top) * page.height;
-    ctx.drawImage(page, sx, sy, sw, sh, margin * scale, y, sw, sh);
-    page.width = 0;
-    y += sh + (gapsPt[i] ?? 0) * scale;
-  }
-
-  const tinted = out;
-  if (opts.footer) {
-    const c = tinted.getContext('2d')!;
-    const fy = tinted.height - footerPt * scale;
-    c.fillStyle = PAGE_BG[opts.theme];
-    c.fillRect(0, fy - 2, tinted.width, footerPt * scale + 2);
-    c.fillStyle = FOOTER_RULE[opts.theme];
-    c.fillRect(margin * scale, fy, tinted.width - margin * 2 * scale, Math.max(1, scale * 0.6));
-    c.fillStyle = FOOTER_INK[opts.theme];
-    c.font = `${Math.round(9.5 * scale)}px Georgia, 'Times New Roman', serif`;
-    c.textBaseline = 'middle';
-    let text = opts.footer;
-    const maxW = tinted.width - margin * 2 * scale;
-    while (c.measureText(text).width > maxW && text.length > 8) text = `${text.slice(0, -2).trimEnd()}…`;
-    c.fillText(text, margin * scale, fy + (footerPt * scale) / 2);
-  }
-  const blob = await new Promise<Blob | null>((res) => tinted.toBlob(res, 'image/png'));
-  tinted.width = 0;
-  if (!blob) throw new Error("Couldn't create the image.");
-  return blob;
 }

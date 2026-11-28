@@ -2,12 +2,13 @@ import type { Orientation } from '../types';
 import { ScissorsIcon, SearchIcon } from './icons';
 
 interface Props {
+  /** The selection to look up, or '' for none (a long passage, or iOS-only lookup): Clip only. */
   text: string;
   orientation: Orientation;
   /** Extra bottom offset (px) while the reader's bottom bar is showing. */
   lift?: number;
   onLookup: (text: string) => void;
-  /** "Clip passage": start Clip Mode from the selection. */
+  /** "Clip": straight to Export with the selected passage. */
   onClip?: () => void;
 }
 
@@ -32,31 +33,33 @@ export default function LookupPill({ text, orientation, lift = 0, onLookup, onCl
 
   return (
     <div className="fixed z-40 flex items-center gap-2 transition-[bottom] duration-200" style={position}>
-      <button
-        key={text}
-        type="button"
-        className="no-callout animate-pill-in flex max-w-[86vw] items-center gap-2 rounded-full bg-fg py-3 pr-5 pl-4 text-[15px] font-medium text-bg shadow-[0_8px_28px_-6px_rgb(0_0_0/0.45)] ring-1 ring-white/10"
-        // Fire on pointerdown (and stop the default) so the tap can't first collapse the
-        // selection, which would hide the pill before a click event arrives.
-        onPointerDown={(e) => {
-          e.preventDefault();
-          onLookup(text);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
+      {text && (
+        <button
+          key={text}
+          type="button"
+          className="no-callout animate-pill-in flex max-w-[86vw] items-center gap-2 rounded-full bg-fg py-3 pr-5 pl-4 text-[15px] font-medium text-bg shadow-[0_8px_28px_-6px_rgb(0_0_0/0.45)] ring-1 ring-white/10"
+          // Fire on pointerdown (and stop the default) so the tap can't first collapse the
+          // selection, which would hide the pill before a click event arrives.
+          onPointerDown={(e) => {
             e.preventDefault();
             onLookup(text);
-          }
-        }}
-        aria-label={`Look up ${text}`}
-      >
-        <SearchIcon size={18} strokeWidth={2.2} className="shrink-0 text-accent" />
-        <span className="truncate">Look up “{truncateLabel(text)}”</span>
-      </button>
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onLookup(text);
+            }
+          }}
+          aria-label={`Look up ${text}`}
+        >
+          <SearchIcon size={18} strokeWidth={2.2} className="shrink-0 text-accent" />
+          <span className="truncate">Look up “{truncateLabel(text)}”</span>
+        </button>
+      )}
       {onClip && (
         <button
           type="button"
-          className="no-callout animate-pill-in flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-fg text-bg shadow-[0_8px_28px_-6px_rgb(0_0_0/0.45)] ring-1 ring-white/10"
+          className="no-callout animate-pill-in flex h-12 shrink-0 items-center justify-center gap-1.5 rounded-full bg-fg pr-4 pl-3.5 text-[15px] font-medium text-bg shadow-[0_8px_28px_-6px_rgb(0_0_0/0.45)] ring-1 ring-white/10"
           // same pointerdown trick: the selection must still exist when Clip Mode reads it
           onPointerDown={(e) => {
             e.preventDefault();
@@ -70,7 +73,8 @@ export default function LookupPill({ text, orientation, lift = 0, onLookup, onCl
           }}
           aria-label="Clip from selection"
         >
-          <ScissorsIcon size={19} className="text-accent" />
+          <ScissorsIcon size={18} className="shrink-0 text-accent" />
+          <span>Clip</span>
         </button>
       )}
     </div>

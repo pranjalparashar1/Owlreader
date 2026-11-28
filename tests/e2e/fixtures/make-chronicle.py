@@ -1,7 +1,8 @@
 """Regenerates chronicle.pdf, the X-Ray and Clip & Export fixture: 12 A5 pages of flowing prose
 with named people, places, organisations and coined terms ("Bumpgate", "CUDA"), a running header
 and page numbers (for the stitcher's void removal), headings in bold, a numbered list, and a
-paragraph that runs from the bottom of page 5 onto page 6 with a hyphenated line break.
+paragraph that runs from the bottom of page 5 onto page 6 with a hyphenated line break, and a
+binding-gutter rule down the inner edge of page 8 (export must keep the margins even around the text).
 Usage: python3 tests/e2e/fixtures/make-chronicle.py  (needs reportlab)"""
 from pathlib import Path
 from reportlab.lib.pagesizes import A5
@@ -65,6 +66,10 @@ for n in range(1, 13):
     c.setFont('Helvetica', 8)
     c.drawCentredString(W / 2, H - 36, 'THE CHIP CHRONICLE')
     c.drawCentredString(W / 2, 34, str(n))
+    if n == 8:
+        c.setLineWidth(0.8)
+        c.setStrokeGray(0.55)
+        c.line(14, 60, 14, H - 60)
     y = TOP
     for kind, body in PAGES[n]:
         if kind == 'h':
