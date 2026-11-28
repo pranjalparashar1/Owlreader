@@ -53,7 +53,7 @@ test('icon-only controls and pages have accessible names', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Storage' })).toBeVisible();
   await openAtlas(page);
   await showChrome(page);
-  for (const name of ['Back to Library', 'Reading settings', 'Fit width', 'Previous page', 'Next page']) {
+  for (const name of ['Back to Library', 'Reading settings', 'Fit text', 'Previous page', 'Next page']) {
     await expect(page.getByRole('button', { name })).toBeVisible();
   }
   await expect(page.getByRole('slider', { name: 'Page' })).toBeVisible();

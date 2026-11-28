@@ -28,11 +28,15 @@ export function truncateLabel(text: string) {
 export default function LookupPill({ text, orientation, lift = 0, onLookup, onClip }: Props) {
   const position =
     orientation === 'portrait'
-      ? { left: '50%', transform: 'translateX(-50%)', bottom: `calc(${24 + lift}px + env(safe-area-inset-bottom))` }
-      : { right: 'calc(20px + env(safe-area-inset-right))', bottom: `calc(${20 + lift}px + env(safe-area-inset-bottom))` };
+      ? { left: '50%', bottom: 'calc(24px + env(safe-area-inset-bottom))', transform: `translateX(-50%) translateY(${-lift}px)` }
+      : {
+          right: 'calc(20px + env(safe-area-inset-right))',
+          bottom: 'calc(20px + env(safe-area-inset-bottom))',
+          transform: `translateY(${-lift}px)`,
+        };
 
   return (
-    <div className="fixed z-40 flex items-center gap-2 transition-[bottom] duration-200" style={position}>
+    <div className="fixed z-40 flex items-center gap-2" style={{ ...position, transition: 'transform 380ms var(--ease-ios)' }}>
       {text && (
         <button
           key={text}

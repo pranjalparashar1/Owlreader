@@ -256,13 +256,16 @@ export default function ExportSheet({ book, range, doc, theme, onClose, onAdjust
   const slides = format === 'image' && result?.format === 'image' ? result.urls : [];
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/40 sm:items-center sm:p-4" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-[60] flex items-end justify-center bg-black/40 sm:items-center sm:p-4 animate-fade-in"
+      onClick={onClose}
+    >
       <div
         ref={ref}
         role="dialog"
         aria-modal="true"
         aria-labelledby="export-title"
-        className="pb-safe flex max-h-[94dvh] w-full max-w-md flex-col overflow-hidden rounded-t-[20px] bg-surface text-fg shadow-2xl sm:rounded-2xl"
+        className="animate-sheet-up pb-safe flex max-h-[94dvh] w-full max-w-md flex-col overflow-hidden rounded-t-[20px] bg-surface text-fg shadow-2xl sm:rounded-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 px-4 pt-4 pb-2">
@@ -396,10 +399,10 @@ export default function ExportSheet({ book, range, doc, theme, onClose, onAdjust
             <div className="mt-3 space-y-2" role="radiogroup" aria-label="PDF type">
               {(
                 [
-                  ['crop', 'Cropped pages', 'The original pages, cut to your clip. Sharp, searchable, keeps diagrams.'],
-                  ['clean', 'Clean text', 'The words re-set as one continuous page, with no page breaks.'],
+                  ['crop', 'Cropped pages'],
+                  ['clean', 'Clean text'],
                 ] as const
-              ).map(([id, name, help]) => (
+              ).map(([id, name]) => (
                 <button
                   key={id}
                   role="radio"
@@ -408,7 +411,6 @@ export default function ExportSheet({ book, range, doc, theme, onClose, onAdjust
                   className={`block w-full rounded-xl px-3.5 py-2.5 text-left ring-1 ${pdfMode === id ? 'ring-2 ring-accent' : 'ring-line'}`}
                 >
                   <div className="text-[14px] font-semibold">{name}</div>
-                  <div className="text-[12px] text-muted">{help}</div>
                 </button>
               ))}
             </div>

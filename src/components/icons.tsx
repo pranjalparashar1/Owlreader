@@ -25,9 +25,29 @@ export const CloseIcon = (p: P) => (
     <path d="M6 6l12 12M18 6 6 18" />
   </svg>
 );
+/** SF Symbols chevron.backward: tall and thin, like the iOS navigation bar. */
 export const BackIcon = (p: P) => (
-  <svg {...base(p)}>
-    <path d="M15 5l-7 7 7 7" />
+  <svg {...base(p)} strokeWidth={2.1}>
+    <path d="M15.5 3.5 7 12l8.5 8.5" />
+  </svg>
+);
+/** SF Symbols chevron.down, small, for menus. */
+export const ChevronDown = (p: P) => (
+  <svg {...base(p)} strokeWidth={2.4}>
+    <path d="m6 9.5 6 6 6-6" />
+  </svg>
+);
+/** SF Symbols checkmark. */
+export const CheckIcon = (p: P) => (
+  <svg {...base(p)} strokeWidth={2.4}>
+    <path d="m5 12.5 4.5 4.5L19 7.5" />
+  </svg>
+);
+/** SF Symbols gearshape. */
+export const GearIcon = (p: P) => (
+  <svg {...base(p)} strokeWidth={1.7}>
+    <path d="M19.17 10.17L21.46 10.38L21.46 13.62L19.17 13.83L18.36 15.78L19.84 17.54L17.54 19.84L15.78 18.36L13.83 19.17L13.62 21.46L10.38 21.46L10.17 19.17L8.22 18.36L6.46 19.84L4.16 17.54L5.64 15.78L4.83 13.83L2.54 13.62L2.54 10.38L4.83 10.17L5.64 8.22L4.16 6.46L6.46 4.16L8.22 5.64L10.17 4.83L10.38 2.54L13.62 2.54L13.83 4.83L15.78 5.64L17.54 4.16L19.84 6.46L18.36 8.22Z" />
+    <circle cx="12" cy="12" r="3.2" />
   </svg>
 );
 export const ChevronRight = (p: P) => (
@@ -68,9 +88,10 @@ export const TrashIcon = (p: P) => (
     <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" />
   </svg>
 );
+/** SF Symbols arrow.left.and.right.text.vertical-ish: fit the text column to the screen. */
 export const FitWidthIcon = (p: P) => (
   <svg {...base(p)}>
-    <path d="M3 12h18M6 9l-3 3 3 3M18 9l3 3-3 3" />
+    <path d="M9 7h6M9 10.5h6M9 14h6M9 17.5h4M2.5 12h3M18.5 12h3M4 10l-1.5 2L4 14M20 10l1.5 2-1.5 2" />
   </svg>
 );
 export const CloudOffIcon = (p: P) => (

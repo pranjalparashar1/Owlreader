@@ -5,18 +5,20 @@ export interface SelectionState {
   text: string; // normalized, 1..80 chars, or '' when nothing short enough to look up is selected
   /** Something is selected, at any length (a whole passage still offers Clip). */
   any: boolean;
+  /** A long-pressed whole page, shown as Owl's own highlight (the native selection is gone). */
+  block: boolean;
 }
 
 const MAX_CHARS = 80;
 const HIDE_DELAY = 350; // keep the pill alive briefly so a tap that collapses the selection still lands
 
-let state: SelectionState = { text: '', any: false };
+let state: SelectionState = { text: '', any: false, block: false };
 const listeners = new Set<() => void>();
 let hideTimer: number | undefined;
 let readTimer: number | undefined;
 
 function emit(next: SelectionState) {
-  if (next.text === state.text && next.any === state.any) return;
+  if (next.text === state.text && next.any === state.any && next.block === state.block) return;
   state = next;
   listeners.forEach((l) => l());
 }
@@ -26,9 +28,10 @@ function readSelection() {
   const raw = sel && !sel.isCollapsed ? sel.toString() : '';
   const text = raw.replace(/\s+/g, ' ').trim();
   window.clearTimeout(hideTimer);
-  if (text && text.length <= MAX_CHARS) emit({ text, any: true });
-  else if (text) emit({ text: '', any: true });
-  else hideTimer = window.setTimeout(() => emit({ text: '', any: false }), HIDE_DELAY);
+  if (!text && state.block) return; // the page highlight stands in for the selection
+  if (text && text.length <= MAX_CHARS) emit({ text, any: true, block: false });
+  else if (text) emit({ text: '', any: true, block: false });
+  else hideTimer = window.setTimeout(() => emit({ text: '', any: false, block: false }), HIDE_DELAY);
 }
 
 function schedule() {
@@ -58,7 +61,13 @@ export function clearTextSelection() {
     /* ignore */
   }
   window.clearTimeout(hideTimer);
-  emit({ text: '', any: false });
+  emit({ text: '', any: false, block: false });
+}
+
+/** Swaps the native selection for Owl's page highlight (see usePageSelect). */
+export function setBlockSelection() {
+  window.clearTimeout(hideTimer);
+  emit({ text: '', any: true, block: true });
 }
 
 export function getSelectionText() {

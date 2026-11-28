@@ -10,7 +10,7 @@ import {
   tapPill,
 } from './helpers';
 
-async function setMode(page: Page, label: 'Wiki' | 'Safari' | 'Both') {
+async function setMode(page: Page, label: 'Wiki' | 'iOS' | 'Both') {
   const panel = await openSettings(page);
   await panel.getByRole('radiogroup', { name: 'Look up with' }).getByRole('radio', { name: label }).click();
   await closeSettings(page);
@@ -32,7 +32,7 @@ test('wiki mode: pill opens the drawer and clears the selection', async ({ page 
 test('safari mode: no pill and the selection is left alone; the choice persists', async ({ page }) => {
   await importAtlas(page);
   await openAtlas(page);
-  await setMode(page, 'Safari');
+  await setMode(page, 'iOS');
   await selectWord(page, 'Blenheim', 1);
   await page.waitForTimeout(600);
   await expect(page.getByRole('button', { name: /^Look up / })).toHaveCount(0);
@@ -41,7 +41,7 @@ test('safari mode: no pill and the selection is left alone; the choice persists'
   await page.reload();
   await expect(page.locator('.textLayer span').first()).toBeAttached();
   const panel = await openSettings(page);
-  await expect(panel.getByRole('radio', { name: 'Safari' })).toHaveAttribute('aria-checked', 'true');
+  await expect(panel.getByRole('radio', { name: 'iOS' })).toHaveAttribute('aria-checked', 'true');
 });
 
 test('both mode: pill and native selection coexist; selection returns after the drawer', async ({ page }) => {
@@ -60,11 +60,11 @@ test('disambiguation: tapping a candidate opens that article', async ({ page }) 
   await openAtlas(page);
   await selectWord(page, 'Mercury', 1);
   const drawer = await tapPill(page, 'Mercury');
-  await expect(drawer).toContainText('could mean several things');
+  await expect(drawer.getByRole('button', { name: /Mercury \(planet\)/ })).toBeVisible();
   await drawer.getByRole('button', { name: /Mercury \(planet\)/ }).click();
   await expect(drawer).toContainText('Mercury is the first planet from the Sun');
   await drawer.getByRole('button', { name: 'Back to results' }).click();
-  await expect(drawer).toContainText('could mean several things');
+  await expect(drawer.getByRole('button', { name: /Mercury \(planet\)/ })).toBeVisible();
 });
 
 test('offline: a cached lookup still opens; refresh fetches a new copy', async ({ page }) => {

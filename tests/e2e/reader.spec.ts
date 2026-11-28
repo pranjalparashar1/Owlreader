@@ -63,16 +63,17 @@ test('Scroll mode keeps a constant number of page boxes', async ({ page }) => {
   expect(await page.locator('.pdf-page').count()).toBeLessThanOrEqual(22);
 });
 
-test('zoom shows a live percentage and resets to fit width', async ({ page }) => {
+test('zoom shows a live percentage and resets to fit text', async ({ page }) => {
   await importAtlas(page);
   await openAtlas(page);
   const panel = await openSettings(page);
-  const value = panel.getByRole('button', { name: /Reset to fit width/ });
-  await expect(value).toHaveText('100%');
+  const value = panel.getByRole('button', { name: /Fit text to screen/ });
+  await expect(value).toHaveText(/^\d+%$/);
+  const fit = parseInt((await value.textContent()) ?? '0');
   await panel.getByRole('button', { name: 'Zoom in' }).click();
-  await expect(value).toHaveText('125%');
+  await expect(value).toHaveText(`${Math.round(fit * 1.25)}%`);
   await value.click();
-  await expect(value).toHaveText('100%');
+  await expect(value).toHaveText(`${fit}%`);
 });
 
 test('dark and sepia are baked into the page, not a CSS filter', async ({ page }) => {

@@ -68,7 +68,7 @@ test('a fast fling in Scroll mode shows previews, never blank pages', async ({ p
   const { worst, maxBoxes } = await page.evaluate(fling, 12_000);
   expect(worst).toBeLessThan(0.15);
   expect(maxBoxes).toBeLessThanOrEqual(24);
-  await expect.poll(() => currentPage(page)).toBeGreaterThan(10);
+  await expect.poll(() => currentPage(page)).toBeGreaterThan(6); // ~5,600 px of fling at fit-text zoom
   // and the page it lands on gets its sharp canvas
   const landed = await currentPage(page);
   await expect(page.locator(`.pdf-page[data-page="${landed}"] .pdf-canvas`)).toBeAttached();

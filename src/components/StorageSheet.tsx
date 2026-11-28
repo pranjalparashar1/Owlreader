@@ -56,13 +56,16 @@ export default function StorageSheet({ onClose }: { onClose: () => void }) {
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center animate-fade-in"
+      onClick={onClose}
+    >
       <div
         ref={ref}
         role="dialog"
         aria-modal="true"
         aria-labelledby="storage-title"
-        className="pb-safe w-full max-w-sm rounded-2xl bg-surface p-5 shadow-2xl outline-none"
+        className="animate-sheet-up pb-safe w-full max-w-sm rounded-2xl bg-surface p-5 shadow-2xl outline-none"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
@@ -83,12 +86,6 @@ export default function StorageSheet({ onClose }: { onClose: () => void }) {
           {row('Books', info ? String(info.books) : '…')}
           {row('Saved lookups', info ? String(info.lookups) : '…')}
         </dl>
-        {info?.persisted === false && (
-          <p className="mt-2 text-[12px] leading-relaxed text-muted">
-            The browser may clear this data if your device runs low on space. Adding Owl to your Home Screen makes that less
-            likely.
-          </p>
-        )}
 
         {confirming ? (
           <div className="mt-4 rounded-xl bg-surface-2 p-3" role="alertdialog" aria-labelledby="clear-q">

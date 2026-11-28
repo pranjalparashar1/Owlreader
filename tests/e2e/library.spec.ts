@@ -65,7 +65,7 @@ test('books from older versions in other formats can be deleted, never opened', 
   await expect(page.getByText('Unsupported · tap to delete')).toBeVisible();
   await page.getByRole('button', { name: /^Old Novel, unsupported format/ }).click();
   const dialog = page.getByRole('dialog');
-  await expect(dialog).toContainText('opens PDFs only');
+  await expect(dialog).toContainText('Old Novel');
   await dialog.getByRole('button', { name: 'Delete' }).click();
   await expect(page.getByText('Old Novel')).toHaveCount(0);
 });

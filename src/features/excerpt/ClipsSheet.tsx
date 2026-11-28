@@ -72,13 +72,16 @@ export default function ClipsSheet({ book, doc, onGo, onExport, onClose }: Props
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-[55] flex items-end justify-center bg-black/40 sm:items-center sm:p-4" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-[55] flex items-end justify-center bg-black/40 sm:items-center sm:p-4 animate-fade-in"
+      onClick={onClose}
+    >
       <div
         ref={ref}
         role="dialog"
         aria-modal="true"
         aria-labelledby="clips-title"
-        className="pb-safe flex max-h-[80dvh] w-full max-w-md flex-col overflow-hidden rounded-t-[20px] bg-surface text-fg shadow-2xl sm:rounded-2xl"
+        className="animate-sheet-up pb-safe flex max-h-[80dvh] w-full max-w-md flex-col overflow-hidden rounded-t-[20px] bg-surface text-fg shadow-2xl sm:rounded-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center px-4 pt-4 pb-2">
@@ -102,12 +105,7 @@ export default function ClipsSheet({ book, doc, onGo, onExport, onClose }: Props
           </button>
         </div>
         <div className="overflow-y-auto px-4 pb-4">
-          {clips?.length === 0 && (
-            <p className="py-6 text-center text-[14px] text-muted">
-              No clips yet. Select text and tap Clip, or tap the scissors in the top bar and tap the paragraphs you want, then
-              Save.
-            </p>
-          )}
+          {clips?.length === 0 && <p className="py-6 text-center text-[14px] text-muted">No clips</p>}
           <ul className="space-y-2">
             {clips?.map((c) => (
               <li key={c.id} className="flex items-stretch gap-1 rounded-xl bg-surface-2 ring-1 ring-line">

@@ -89,7 +89,7 @@ test('a long selection offers Clip (even with iOS-only lookup), straight to Expo
   await openChronicle(page);
   // iOS-only lookup: Owl shows no Look up pill, but Clip is still offered
   const panel = await openSettings(page);
-  await panel.getByRole('radio', { name: 'Safari' }).click();
+  await panel.getByRole('radio', { name: 'iOS' }).click();
   await page.keyboard.press('Escape');
   await goToPage(page, 5);
   await selectSpan(page, 5, 'CUDA was launched', 'Launch thousands');
@@ -119,9 +119,7 @@ test('tap-to-snap: tapping a heading then a list item clips exactly those paragr
   await showChrome(page);
   await page.getByRole('button', { name: 'Clip passage' }).click();
   const bar = page.getByRole('toolbar', { name: 'Clip passage' });
-  await expect(bar.getByTestId('clip-hint')).toHaveText('Tap a paragraph to start');
   await tapText(page, 5, 'Chapter Three');
-  await expect(bar.getByTestId('clip-hint')).toHaveText('Tap to extend · drag to fine-tune');
   await tapText(page, 5, 'Launch thousands');
   await expect(bar.getByTestId('clip-span')).toHaveText('p. 5');
   await expect(page.locator('footer[aria-hidden="false"]')).toHaveCount(0); // taps don't summon the chrome

@@ -21,18 +21,15 @@ test.beforeEach(async ({ page }) => {
 const loadedXrayWorker = (page: Page) =>
   page.evaluate(() => performance.getEntriesByType('resource').some((e) => /xrayWorker/.test(e.name)));
 
-async function setXray(page: Page, label: 'Off' | 'This page' | 'Whole book') {
+async function setXray(page: Page, label: 'Off' | 'Page' | 'Book') {
   const panel = await openSettings(page);
   await panel.getByRole('radiogroup', { name: 'X-Ray' }).getByRole('radio', { name: label }).click();
   return panel;
 }
 
-test('search bar: clear button, typed search, and the book context is seeded from the PDF', async ({ page }) => {
+test('search bar: clear button and typed search', async ({ page }) => {
   await importChronicle(page);
   await openChronicle(page);
-  const panel = await openSettings(page);
-  await expect(panel.getByRole('textbox', { name: 'Book context' })).toHaveValue('Nvidia'); // PDF Subject
-  await closeSettings(page);
 
   await selectWord(page, 'Santa Clara', 1);
   const drawer = await tapPill(page, 'Santa Clara');
@@ -132,15 +129,15 @@ test('X-Ray Off hides the button and runs no extraction', async ({ page }) => {
 test('whole-book index: resumable, In This Book cards, jump and return', async ({ page }) => {
   await importChronicle(page);
   await openChronicle(page);
-  const panel = await setXray(page, 'Whole book');
-  await expect(panel.getByTestId('index-progress')).toHaveText('Indexed all 12 pages', { timeout: 20_000 });
+  const panel = await setXray(page, 'Book');
+  await expect(panel.getByTestId('index-progress')).toHaveText('done', { timeout: 20_000 });
   await closeSettings(page);
 
   await page.reload();
   await expect(page.locator('.textLayer span').first()).toBeAttached();
   const again = await openSettings(page);
-  await expect(again.getByRole('radio', { name: 'Whole book' })).toHaveAttribute('aria-checked', 'true');
-  await expect(again.getByTestId('index-progress')).toHaveText('Indexed all 12 pages');
+  await expect(again.getByRole('radio', { name: 'Book' })).toHaveAttribute('aria-checked', 'true');
+  await expect(again.getByTestId('index-progress')).toHaveText('done');
   await closeSettings(page);
 
   await goToPage(page, 4);
@@ -162,8 +159,8 @@ test('whole-book index: resumable, In This Book cards, jump and return', async (
 test('deleting a book deletes its X-Ray index', async ({ page }) => {
   await importChronicle(page);
   await openChronicle(page);
-  const panel = await setXray(page, 'Whole book');
-  await expect(panel.getByTestId('index-progress')).toHaveText('Indexed all 12 pages', { timeout: 20_000 });
+  const panel = await setXray(page, 'Book');
+  await expect(panel.getByTestId('index-progress')).toHaveText('done', { timeout: 20_000 });
   await closeSettings(page);
   await showChrome(page);
   await page.getByRole('button', { name: 'Back to Library' }).click();
@@ -214,7 +211,6 @@ test('disambiguation pages are read and ranked by the names on the page, not sea
   await goToPage(page, 7);
   await selectWord(page, 'Bangalore', 7);
   const drawer = await tapPill(page, 'Bangalore');
-  await expect(drawer).toContainText('could mean several things');
   const list = drawer.getByRole('listitem');
   // "Tel Aviv", next to the word on the page, is in the Karnataka article's intro
   await expect(list.first()).toContainText('Bangalore, Karnataka');

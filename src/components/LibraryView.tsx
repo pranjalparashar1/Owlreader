@@ -4,7 +4,7 @@ import { deleteBook, listBooks } from '../db/libraryDb';
 import { importBook } from '../services/importBook';
 import StorageSheet from './StorageSheet';
 import { useFocusTrap } from '../hooks/useFocusTrap';
-import { MoreIcon, OwlMark, PlusIcon, SearchIcon, StorageIcon, TrashIcon } from './icons';
+import { MoreIcon, OwlMark, PlusIcon, StorageIcon, TrashIcon } from './icons';
 
 interface Props {
   onOpen: (book: BookRecord) => void;
@@ -115,24 +115,22 @@ function ConfirmDelete({ book, onCancel, onConfirm }: { book: BookRecord; onCanc
   const ref = useRef<HTMLDivElement>(null);
   useFocusTrap(ref, true);
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center" onClick={onCancel}>
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center animate-fade-in"
+      onClick={onCancel}
+    >
       <div
         ref={ref}
         role="dialog"
         aria-modal="true"
         aria-labelledby="del-title"
-        className="pb-safe w-full max-w-sm rounded-2xl bg-surface p-5 shadow-2xl"
+        className="animate-sheet-up pb-safe w-full max-w-sm rounded-2xl bg-surface p-5 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <h2 id="del-title" className="text-[17px] font-semibold">
-          Delete this book?
+          Delete “{book.title}”?
         </h2>
-        <p className="mt-1.5 text-[14px] text-muted">
-          {isSupportedBook(book)
-            ? `“${book.title}” and your reading position will be removed from this device.`
-            : `Owl now opens PDFs only, so “${book.title}” (saved by an earlier version) can't be opened.`}{' '}
-          {formatSize(book.fileSize || 0)} will be freed.
-        </p>
+        <p className="mt-1 text-[14px] text-muted tabular-nums">{formatSize(book.fileSize || 0)}</p>
         <div className="mt-5 flex gap-2">
           <button onClick={onCancel} className="flex-1 rounded-xl bg-surface-2 py-3 text-[15px] font-medium">
             Cancel
@@ -243,19 +241,7 @@ export default function LibraryView({ onOpen }: Props) {
               <OwlMark size={72} />
             </div>
             <h2 className="font-serif text-[22px] font-semibold">Your shelf is empty</h2>
-            <p className="mt-2 text-[15px] leading-relaxed text-muted">
-              Import a PDF from Files. Everything stays on this device.
-            </p>
             <div className="mt-6">{importButton}</div>
-            <div className="mt-10 flex items-start gap-3 rounded-2xl bg-surface p-4 text-left ring-1 ring-line">
-              <div className="mt-0.5 rounded-full bg-accent/15 p-2 text-accent">
-                <SearchIcon size={18} />
-              </div>
-              <p className="text-[13.5px] leading-relaxed text-muted">
-                <span className="font-semibold text-fg">Select any name or place</span> while reading, then tap the Look up button
-                for a photo, a short summary and a map, without leaving your book.
-              </p>
-            </div>
           </div>
         )}
 
