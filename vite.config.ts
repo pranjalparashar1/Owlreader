@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 
 const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
 
-// Set BASE=/Owlreader/ when deploying to GitHub Pages project sites.
+// Set BASE=/owl/ when deploying to GitHub Pages project sites.
 const base = process.env.BASE ?? '/';
 
 export default defineConfig({

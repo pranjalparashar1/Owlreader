@@ -19,7 +19,7 @@ npm run test:e2e   # Playwright suite (builds, serves on :4173, emulated iPhone 
 
 To try it on an iPhone, open the deployed site in Safari, then _Share → Add to Home Screen_.
 
-**GitHub Pages:** `.github/workflows/deploy-pages.yml` builds every push to `main` with `BASE=/Owlreader/` (the Vite base, the PWA manifest `scope`/`start_url` and the service worker path all follow it) and pushes the built site to the `gh-pages` branch. One-time setup: _Settings → Pages → Source: Deploy from a branch → Branch: `gh-pages`, folder `/ (root)`_. Don't point Pages at `main`: that serves the unbuilt source and shows a blank page.
+**GitHub Pages:** `.github/workflows/deploy-pages.yml` builds every push to `main` with `BASE=/owl/` (the Vite base, the PWA manifest `scope`/`start_url` and the service worker path all follow it) and pushes the built site to the `gh-pages` branch. One-time setup: _Settings → Pages → Source: Deploy from a branch → Branch: `gh-pages`, folder `/ (root)`_. Don't point Pages at `main`: that serves the unbuilt source and shows a blank page.
 
 Other static hosts (Vercel, Netlify) serve from `/`, so a plain `npm run build` is right there.
 

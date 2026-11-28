@@ -16,7 +16,7 @@ export const LIST_VERSION = 2;
 /** At most this many senses are kept per disambiguation page (ranked locally each time it's shown). */
 const MAX_SENSES = 100;
 // Wikimedia asks browser clients to identify themselves with this header (User-Agent can't be set from JS).
-const API_USER_AGENT = `Owl/${__APP_VERSION__} (https://github.com/pranjalparashar1/Owlreader)`;
+const API_USER_AGENT = `Owl/${__APP_VERSION__} (https://github.com/pranjalparashar1/owl)`;
 
 export interface LookupResponse {
   result: LookupResult;
