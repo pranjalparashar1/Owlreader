@@ -2,12 +2,13 @@
  * Clip Mode: a two-handle curtain over the (virtualized) Scroll view. Only logical coordinates
  * ({ page, y }) are stored; the overlay re-reads page box positions each frame while Clip Mode is
  * open, so the reader can scroll freely across page boundaries and the handles stay put on the text.
- * This whole module loads only when Clip Mode is entered.
+ * Tapping a paragraph (or heading) snaps the curtain to it, and tapping another stretches it to
+ * cover both; the handles stay for fine-tuning. This whole module loads only when Clip Mode is entered.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReaderHandle } from '../../components/readerTypes';
 import type { BookPoint, ClipRange } from '../../types';
-import { MAX_CLIP_PAGES, pageLayout, snapY, spanLabel } from './layout';
+import { MAX_CLIP_PAGES, pageLayout, paragraphAt, snapY, spanLabel } from './layout';
 import { clientYOf, comparePoints, pointAt } from './points';
 
 interface Props {
@@ -30,6 +31,9 @@ export default function ClipOverlay({ reader, initial, onCancel, onExport, onSav
   const startRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ which: 'start' | 'end'; y: number; downY: number } | null>(null);
+  /** The opening on-screen guess is replaced by the first tapped paragraph rather than stretched. */
+  const provisional = useRef(!initial);
+  const [taps, setTaps] = useState(0);
 
   const scroller = () => document.querySelector<HTMLElement>('.pdf-scroller');
 
@@ -108,6 +112,40 @@ export default function ClipOverlay({ reader, initial, onCancel, onExport, onSav
     return () => cancelAnimationFrame(raf);
   }, []);
 
+  // ---- tap-to-snap: a tap on a page picks the paragraph under it (passive listener, no preventDefault)
+  useEffect(() => {
+    const onClick = async (e: MouseEvent) => {
+      const t = e.target as Element | null;
+      if (!t?.closest('.pdf-page') || t.closest('.clip-handle, [role="toolbar"]') || drag.current) return;
+      const sel = document.getSelection();
+      if (sel && !sel.isCollapsed) return;
+      const doc = reader.current?.getDocument();
+      const p = pointAt(e.clientY, e.clientX);
+      if (!doc || !p) return;
+      const para = await pageLayout(doc, p.page)
+        .then((l) => paragraphAt(l, p.y))
+        .catch(() => null);
+      if (!para) return;
+      const tapped: ClipRange = { start: { page: p.page, y: para.top }, end: { page: p.page, y: para.bottom } };
+      const cur = rangeRef.current;
+      let next = tapped;
+      if (cur && !provisional.current) {
+        const inside = comparePoints(tapped.start, cur.start) >= 0 && comparePoints(tapped.end, cur.end) <= 0;
+        if (!inside) {
+          // stretch to cover both, unless that would pass the page limit (then start over here)
+          const start = comparePoints(tapped.start, cur.start) < 0 ? tapped.start : cur.start;
+          const end = comparePoints(tapped.end, cur.end) > 0 ? tapped.end : cur.end;
+          if (end.page - start.page < MAX_CLIP_PAGES) next = { start, end };
+        }
+      }
+      provisional.current = false;
+      setRange(next);
+      setTaps((n) => n + 1);
+    };
+    window.addEventListener('click', onClick, { passive: true });
+    return () => window.removeEventListener('click', onClick);
+  }, [reader]);
+
   // ---- dragging a handle (pointer capture on the knob only; the page itself scrolls as usual)
   const autoScroll = useRef(0);
   useEffect(() => () => cancelAnimationFrame(autoScroll.current), []);
@@ -149,6 +187,7 @@ export default function ClipOverlay({ reader, initial, onCancel, onExport, onSav
     e.preventDefault();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     drag.current = { which, y: e.clientY, downY: e.clientY };
+    provisional.current = false;
     cancelAnimationFrame(autoScroll.current);
     autoScroll.current = requestAnimationFrame(tick);
   };
@@ -164,6 +203,7 @@ export default function ClipOverlay({ reader, initial, onCancel, onExport, onSav
     cancelAnimationFrame(autoScroll.current);
     const r = rangeRef.current;
     if (!d || !r) return;
+    setTaps((n) => n + 1);
     const snapped = await snap(d.which === 'start' ? r.start : r.end, d.which);
     setRange((cur) => (cur ? (d.which === 'start' ? { ...cur, start: snapped } : { ...cur, end: snapped }) : cur));
   };
@@ -227,7 +267,9 @@ export default function ClipOverlay({ reader, initial, onCancel, onExport, onSav
             <div className="text-[15px] font-semibold tabular-nums" data-testid="clip-span">
               {range ? spanLabel(range) : '…'}
             </div>
-            <div className="text-[11px] text-muted">Drag the handles · up to {MAX_CLIP_PAGES} pages</div>
+            <div className="text-[11px] text-muted" data-testid="clip-hint">
+              {taps === 0 && !initial ? 'Tap a paragraph to start' : `Tap to extend · drag to fine-tune`}
+            </div>
           </div>
           <button
             type="button"

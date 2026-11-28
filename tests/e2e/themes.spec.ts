@@ -85,8 +85,6 @@ test('Clip export offers a Black image theme with a pure black background', asyn
   await openChronicle(page);
   await selectWord(page, 'founded', 1);
   await page.getByRole('button', { name: 'Clip from selection' }).dispatchEvent('pointerdown');
-  const bar = page.getByRole('toolbar', { name: 'Clip passage' });
-  await bar.getByRole('button', { name: 'Export…' }).click();
   const sheet = page.getByRole('dialog', { name: /^Export / });
   await sheet.getByRole('radiogroup', { name: 'Image theme' }).getByRole('radio', { name: 'Black' }).click();
   const img = sheet.getByRole('img', { name: 'Clip preview' });

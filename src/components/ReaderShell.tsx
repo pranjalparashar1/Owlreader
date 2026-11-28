@@ -52,6 +52,8 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   /** Clip Mode: null = reading; otherwise the range to start from (null = what's on screen). */
   const [clip, setClip] = useState<{ initial: ClipRange | null } | null>(null);
   const [exportRange, setExportRange] = useState<ClipRange | null>(null);
+  /** Where the Export sheet was opened from: its Adjust button goes back to (or into) Clip Mode. */
+  const [exportFrom, setExportFrom] = useState<'clip' | 'selection' | 'vault'>('clip');
   const [clipsOpen, setClipsOpen] = useState(false);
 
   useEffect(() => {
@@ -101,23 +103,31 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
 
   // ---- Clip Mode. Clipping runs in the vertical Scroll layout (so a passage can run across a
   // page break) without changing the saved Pages/Scroll setting.
-  const enterClip = (fromSelection: boolean) => {
-    let initial: ClipRange | null = null;
-    if (fromSelection) {
-      const sel = document.getSelection();
-      const rects = sel && sel.rangeCount ? [...sel.getRangeAt(0).getClientRects()].filter((r) => r.height > 0) : [];
-      if (rects.length) {
-        const first = rects[0];
-        const last = rects[rects.length - 1];
-        const a = pointAt(first.top, first.left + first.width / 2);
-        const b = pointAt(last.bottom, last.left + last.width / 2);
-        if (a && b && comparePoints(a, b) <= 0) initial = { start: a, end: b };
-      }
-      clearTextSelection();
-    }
+  const selectionRange = (): ClipRange | null => {
+    const sel = document.getSelection();
+    const rects = sel && sel.rangeCount ? [...sel.getRangeAt(0).getClientRects()].filter((r) => r.height > 0) : [];
+    if (!rects.length) return null;
+    const first = rects[0];
+    const last = rects[rects.length - 1];
+    const a = pointAt(first.top + 1, first.left + first.width / 2);
+    const b = pointAt(last.bottom - 1, last.left + last.width / 2);
+    return a && b && comparePoints(a, b) <= 0 ? { start: a, end: b } : null;
+  };
+  const enterClip = (initial: ClipRange | null) => {
     setSettingsOpen(false);
     setChrome(false);
+    setExportRange(null);
     setClip({ initial });
+  };
+  /** One tap from a text selection: the Export sheet, with the selected lines already clipped. */
+  const clipSelection = async () => {
+    const raw = selectionRange();
+    clearTextSelection();
+    const doc = readerRef.current?.getDocument();
+    if (!raw || !doc) return enterClip(raw);
+    const { lineBounds } = await import('../features/excerpt/layout');
+    setExportFrom('selection');
+    setExportRange(await lineBounds(doc, raw).catch(() => raw));
   };
   const saveClipRange = async (range: ClipRange) => {
     const doc = readerRef.current?.getDocument();
@@ -212,7 +222,10 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
     if (returnTo !== null) readerRef.current?.goToPage(returnTo);
     setReturnTo(null);
   };
+  const clipOpen = useRef(false);
+  clipOpen.current = !!clip;
   const onCenterTap = useCallback(() => {
+    if (clipOpen.current) return; // in Clip Mode a tap picks a paragraph
     setChrome((c) => !c);
     setSettingsOpen(false);
   }, []);
@@ -348,7 +361,7 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
           </button>
           <div className="min-w-0 flex-1 truncate text-center font-serif text-[15px] font-semibold">{book.title}</div>
           <button
-            onClick={() => enterClip(false)}
+            onClick={() => enterClip(null)}
             disabled={!location}
             aria-label="Clip passage"
             title="Clip"
@@ -462,13 +475,13 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
         </div>
       )}
 
-      {mode !== 'native' && selection.text && !lookupReq && !clip && (
+      {selection.any && !lookupReq && !clip && !exportRange && (
         <LookupPill
-          text={selection.text}
+          text={mode === 'native' ? '' : selection.text}
           orientation={orientation}
           lift={chrome ? 76 : 0}
           onLookup={openLookup}
-          onClip={() => enterClip(true)}
+          onClip={clipSelection}
         />
       )}
       <ReaderSettings
@@ -495,16 +508,21 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
             initial={clip.initial}
             onCancel={() => setClip(null)}
             onSave={saveClipRange}
-            onExport={setExportRange}
+            onExport={(r) => {
+              setExportFrom('clip');
+              setExportRange(r);
+            }}
           />
         )}
         {clipsOpen && (
           <ClipsSheet
-            bookId={book.id}
+            book={book}
+            doc={readerRef.current?.getDocument() ?? null}
             onClose={() => setClipsOpen(false)}
             onGo={goToClip}
             onExport={(r) => {
               setClipsOpen(false);
+              setExportFrom('vault');
               setExportRange(r);
             }}
           />
@@ -516,6 +534,8 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
             doc={readerRef.current.getDocument()!}
             theme={settings.theme}
             onClose={() => setExportRange(null)}
+            onAdjust={() => (clip && exportFrom === 'clip' ? setExportRange(null) : enterClip(exportRange))}
+            onSave={exportFrom === 'clip' || exportFrom === 'vault' ? undefined : saveClipRange}
           />
         )}
       </Suspense>

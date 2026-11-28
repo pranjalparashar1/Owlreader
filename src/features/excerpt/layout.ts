@@ -24,6 +24,11 @@ export interface Line {
   size: number;
   spans: Span[];
   text: string;
+  /**
+   * Left edge of each character of `text` (fractions of the page width), plus the line's right
+   * edge at the end: `xs.length === text.length + 1`. Estimated within each text item.
+   */
+  xs: number[];
   furniture: boolean;
 }
 
@@ -126,26 +131,48 @@ async function buildLayout(doc: PDFDocumentProxy, n: number, withFonts: boolean)
     const spans: Span[] = [];
     let text = '';
     let lastEnd = -Infinity;
+    // the normalized text (whitespace collapsed, trimmed) with a position per character
+    let norm = '';
+    const xs: number[] = [];
     for (const i of g) {
       let str = i.it.str;
       if (!str.trim() && !str) continue;
+      const gapSpace = text && !/\s$/.test(text) && !/^\s/.test(str) && i.x - lastEnd > i.size * 0.15;
+      if (gapSpace && norm && !norm.endsWith(' ')) {
+        norm += ' ';
+        xs.push(lastEnd / W);
+      }
+      const chars = [...i.it.str];
+      chars.forEach((ch, k) => {
+        const c = /\s/.test(ch) ? ' ' : ch;
+        if (c === ' ' && (!norm || norm.endsWith(' '))) return;
+        norm += c;
+        for (let u = 0; u < c.length; u++) xs.push((i.x + (i.w * k) / chars.length) / W);
+      });
       // a visible gap between items is a word space the PDF didn't encode
-      if (text && !/\s$/.test(text) && !/^\s/.test(str) && i.x - lastEnd > i.size * 0.15) str = ` ${str}`;
+      if (gapSpace) str = ` ${str}`;
       text += str;
       lastEnd = i.x + i.w;
       const prev = spans[spans.length - 1];
       if (prev && prev.bold === i.bold && prev.italic === i.italic) prev.text += str;
       else spans.push({ text: str, bold: i.bold, italic: i.italic });
     }
+    const x1 = Math.max(...g.map((i) => i.x + i.w)) / W;
+    while (norm.endsWith(' ')) {
+      norm = norm.slice(0, -1);
+      xs.pop();
+    }
+    xs.push(x1);
     return {
       top: (base - size * 0.82) / H,
       bottom: (base + size * 0.24) / H,
       baseline: base / H,
       x0: g[0].x / W,
-      x1: Math.max(...g.map((i) => i.x + i.w)) / W,
+      x1,
       size,
       spans,
-      text: text.replace(/\s+/g, ' ').trim(),
+      text: norm,
+      xs,
       furniture: false,
     };
   });
@@ -213,6 +240,21 @@ export function boundaries(layout: PageLayout): { lines: number[]; paragraphs: n
   return { lines, paragraphs };
 }
 
+/**
+ * The paragraph (or heading) under a point on the page, as its top and bottom boundary, or null
+ * when the point is above the first line or below the last one by more than a line.
+ */
+export function paragraphAt(layout: PageLayout, y: number): { top: number; bottom: number } | null {
+  const { paragraphs } = boundaries(layout);
+  if (paragraphs.length < 2) return null;
+  const slack = layout.pitch;
+  if (y < paragraphs[0] - slack || y > paragraphs[paragraphs.length - 1] + slack) return null;
+  for (let i = 1; i < paragraphs.length; i++) {
+    if (y <= paragraphs[i] || i === paragraphs.length - 1) return { top: paragraphs[i - 1], bottom: paragraphs[i] };
+  }
+  return null;
+}
+
 /** Soft snap: a paragraph boundary if one is close, else the nearest line boundary (never mid-line). */
 export function snapY(layout: PageLayout, y: number): number {
   const { lines, paragraphs } = boundaries(layout);
@@ -222,6 +264,16 @@ export function snapY(layout: PageLayout, y: number): number {
   if (Math.abs(p - y) < 0.045) return p;
   const l = nearest(lines);
   return Math.abs(l - y) < 0.06 ? l : y;
+}
+
+/** A selection's range widened to whole lines: from the top of its first line to the bottom of its last. */
+export async function lineBounds(doc: PDFDocumentProxy, r: ClipRange): Promise<ClipRange> {
+  const [a, b] = await Promise.all([pageLayout(doc, r.start.page), pageLayout(doc, r.end.page)]);
+  const first = a.lines.find((l) => l.bottom > r.start.y);
+  const last = [...b.lines].reverse().find((l) => l.top < r.end.y);
+  const start = first ? { page: r.start.page, y: Math.max(0, first.top - a.pitch * 0.25) } : r.start;
+  const end = last ? { page: r.end.page, y: Math.min(1, last.bottom + b.pitch * 0.25) } : r.end;
+  return start.page < end.page || start.y < end.y ? { start, end } : r;
 }
 
 /** Each spanned page with the part of it inside the clip. */

@@ -1,5 +1,6 @@
 /**
  * Standalone mini-PDFs with pdf-lib (only ever loaded from here, on demand).
+ * - Dossier: several saved clips stitched into one cropped PDF behind a contents page.
  * - Cropped facsimile: the spanned pages copied from the book, each cropped to its inked part of
  *   the clip. Vector, searchable, keeps diagrams and tables, tiny.
  * - Clean text: the passage re-typeset as one continuous page, so no page break splits it.
@@ -19,11 +20,10 @@ function meta(out: PDFDocument, c: Citation) {
   out.setProducer('Owl');
 }
 
-export async function exportCroppedPdf(data: ArrayBuffer, doc: PDFDocumentProxy, range: ClipRange, c: Citation) {
+/** Copies the spanned pages of a clip into `out`, each cut down to its inked part. */
+async function addCroppedPages(out: PDFDocument, src: PDFDocument, doc: PDFDocumentProxy, range: ClipRange) {
   const trims = await trimSlices(doc, range);
-  if (!trims.length) throw new Error('Nothing to export: the clip is empty.');
-  const src = await PDFDocument.load(data.slice(0), { ignoreEncryption: true, updateMetadata: false });
-  const out = await PDFDocument.create();
+  if (!trims.length) return 0;
   const pages = await out.copyPages(
     src,
     trims.map((t) => t.page - 1),
@@ -33,7 +33,8 @@ export async function exportCroppedPdf(data: ArrayBuffer, doc: PDFDocumentProxy,
     out.addPage(p);
     if (p.getRotation().angle % 360 !== 0) return; // rotated pages are kept whole rather than cropped wrongly
     const box = p.getCropBox();
-    const pad = 6; // pt of breathing room around the ink
+    // even breathing room on every side of the text block
+    const pad = 12;
     const x0 = Math.max(box.x, box.x + t.left * box.width - pad);
     const x1 = Math.min(box.x + box.width, box.x + t.right * box.width + pad);
     const yTop = Math.min(box.y + box.height, box.y + (1 - t.top) * box.height + pad);
@@ -42,7 +43,88 @@ export async function exportCroppedPdf(data: ArrayBuffer, doc: PDFDocumentProxy,
       set.call(p, x0, yBot, x1 - x0, yTop - yBot);
     }
   });
+  return pages.length;
+}
+
+const loadSource = (data: ArrayBuffer) => PDFDocument.load(data.slice(0), { ignoreEncryption: true, updateMetadata: false });
+
+export async function exportCroppedPdf(data: ArrayBuffer, doc: PDFDocumentProxy, range: ClipRange, c: Citation) {
+  const out = await PDFDocument.create();
+  if (!(await addCroppedPages(out, await loadSource(data), doc, range))) throw new Error('Nothing to export: the clip is empty.');
   meta(out, c);
+  return out.save();
+}
+
+export interface DossierClip {
+  range: ClipRange;
+  title: string;
+}
+
+/**
+ * Several saved clips, however far apart, as one briefing: a contents page, then each clip's
+ * cropped pages in book order. Still vector and searchable.
+ */
+export async function exportDossier(
+  data: ArrayBuffer,
+  doc: PDFDocumentProxy,
+  clips: DossierClip[],
+  book: { title: string; author?: string },
+) {
+  const ordered = [...clips].sort((a, b) => a.range.start.page - b.range.start.page || a.range.start.y - b.range.start.y);
+  const out = await PDFDocument.create();
+  const [regular, bold, italic] = await Promise.all([
+    out.embedFont(StandardFonts.TimesRoman),
+    out.embedFont(StandardFonts.TimesRomanBold),
+    out.embedFont(StandardFonts.TimesRomanItalic),
+  ]);
+  const W = 420;
+  const M = 44;
+  const ink = rgb(0.1, 0.09, 0.08);
+  const muted = rgb(0.42, 0.4, 0.38);
+  const rows = ordered.map((c, i) => ({
+    lines: wrap(bold, 12, encodable(bold, `${i + 1}. ${c.title}`), W - M * 2 - 70),
+    pages: spanLabel(c.range),
+  }));
+  const titleLines = wrap(bold, 18, encodable(bold, book.title), W - M * 2);
+  const H = Math.max(300, M * 2 + titleLines.length * 24 + 40 + rows.reduce((h, r) => h + r.lines.length * 16 + 8, 0) + 30);
+  const cover = out.addPage([W, H]);
+  let y = H - M;
+  for (const l of titleLines) {
+    y -= 22;
+    cover.drawText(l, { x: M, y, size: 18, font: bold, color: ink });
+  }
+  y -= 18;
+  const sub = `${book.author ? `${book.author} · ` : ''}${clips.length} clips`;
+  cover.drawText(encodable(italic, sub), { x: M, y, size: 11, font: italic, color: muted });
+  y -= 14;
+  cover.drawLine({ start: { x: M, y }, end: { x: W - M, y }, thickness: 0.6, color: rgb(0.85, 0.83, 0.8) });
+  y -= 10;
+  for (const r of rows) {
+    y -= 8;
+    r.lines.forEach((l, k) => {
+      y -= 16;
+      cover.drawText(l, { x: M, y, size: 12, font: k ? regular : bold, color: ink });
+      if (!k)
+        cover.drawText(r.pages, {
+          x: W - M - regular.widthOfTextAtSize(r.pages, 11),
+          y,
+          size: 11,
+          font: regular,
+          color: muted,
+        });
+    });
+  }
+  cover.drawText('Made with Owl', { x: M, y: M / 2, size: 8, font: italic, color: muted });
+
+  const src = await loadSource(data);
+  let n = 0;
+  for (const c of ordered) n += await addCroppedPages(out, src, doc, c.range);
+  if (!n) throw new Error('Nothing to export: the clips are empty.');
+  out.setTitle(`${book.title}: ${clips.length} clips`);
+  if (book.author) out.setAuthor(book.author);
+  out.setSubject(`Excerpts from ${book.title}`);
+  out.setCreator('Owl');
+  out.setProducer('Owl');
   return out.save();
 }
 
