@@ -1,4 +1,4 @@
-/** OwlReader 1.x opens PDFs only. Records from older versions may carry another format. */
+/** Owl 1.x opens PDFs only. Records from older versions may carry another format. */
 export type BookFormat = 'pdf';
 export type ReaderTheme = 'light' | 'sepia' | 'dark';
 export type Orientation = 'portrait' | 'landscape';
@@ -34,6 +34,8 @@ export interface LookupCandidate {
   snippet: string; // Plain text (HTML tags stripped)
   /** The section of `title` the search matched inside, if any. */
   section?: string;
+  /** Lowercased title, description and intro, scored against the page's terms to rank the list. */
+  rank?: string;
 }
 
 /** Text with the search's matched words marked: [text, isMatch][] (JSON-safe for IndexedDB). */
@@ -60,6 +62,8 @@ export interface LookupResult {
   candidates?: LookupCandidate[];
   /** The book context the lookup was made with (results from a search depend on it). */
   context?: string;
+  /** How the list was built; lists and sections from older versions are refetched. */
+  v?: number;
   cachedAt: number;
 }
 

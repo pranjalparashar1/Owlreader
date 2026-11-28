@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 
 const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string };
 
-// Set BASE=/Owlreader/ when deploying to GitHub Pages project sites.
+// Set BASE=/owl/ when deploying to GitHub Pages project sites.
 const base = process.env.BASE ?? '/';
 
 export default defineConfig({
@@ -20,8 +20,8 @@ export default defineConfig({
       registerType: 'prompt',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {
-        name: 'OwlReader',
-        short_name: 'OwlReader',
+        name: 'Owl',
+        short_name: 'Owl',
         description: 'Read PDF books with tap-to-lookup photos, summaries and maps.',
         theme_color: '#1c1917',
         background_color: '#faf7f2',

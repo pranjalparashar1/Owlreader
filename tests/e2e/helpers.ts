@@ -31,6 +31,28 @@ const ARTICLES: Record<string, { title: string; extract: string; coordinates?: {
   'Jensen Huang': { title: 'Jensen Huang', extract: 'Jensen Huang is a Taiwanese-American businessman.' },
 };
 
+/**
+ * Links on mocked disambiguation pages (generator=links). Mercury has none, so it exercises the
+ * search fallback. Bangalore's right sense sorts 5th by title: only page-term ranking surfaces it.
+ */
+const LINKS: Record<string, Array<Record<string, unknown>>> = {
+  Bangalore: [
+    { title: 'Bangalore (film)', description: '2009 Indian film' },
+    { title: 'Bangalore (album)', description: 'Album by a rock band' },
+    {
+      title: 'Bangalore, Karnataka',
+      description: 'Capital of Karnataka, India',
+      extract: 'Bangalore is a technology hub with research centres of firms from Tel Aviv to Santa Clara.',
+    },
+    { title: 'Bangalore (band)', description: 'Indie band' },
+    { title: 'Bangalore (ship)', description: 'East Indiaman launched in 1792' },
+    { title: 'Bangalore' },
+    { title: 'Bangalore (disambiguation)' },
+    { title: 'Bangalore Road', pageprops: { disambiguation: '' } },
+    { title: 'Bangalore torpedo', missing: true },
+  ],
+};
+
 /** Routes every Wikipedia/Wikimedia/OSM request: the test environment never hits the network. */
 export async function mockWikipedia(page: Page): Promise<WikiMock> {
   const mock: WikiMock = { mode: 'ok', version: 'v1', requests: [] };
@@ -43,10 +65,14 @@ export async function mockWikipedia(page: Page): Promise<WikiMock> {
     const summary = /\/page\/summary\/(.+)$/.exec(url);
     if (summary) {
       const title = summary[1].replace(/_/g, ' ');
-      if (title === 'Mercury') return json(route, { type: 'disambiguation', title: 'Mercury', extract: '' });
+      if (title === 'Mercury' || title in LINKS) return json(route, { type: 'disambiguation', title, extract: '' });
       const a = ARTICLES[title];
       if (!a) return route.fulfill({ status: 404, body: '{}' });
       return json(route, { type: 'standard', ...a, extract: `${a.extract} (${mock.version})` });
+    }
+    if (url.includes('generator=links')) {
+      const t = /[?&]titles=([^&]+)/.exec(url)?.[1] ?? '';
+      return json(route, { query: { pages: LINKS[t] ?? [] } });
     }
     if (url.includes('list=search')) {
       const q = /srsearch=([^&]+)/.exec(url)?.[1] ?? '';

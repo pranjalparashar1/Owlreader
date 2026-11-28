@@ -7,8 +7,16 @@ const ACTION = 'https://en.wikipedia.org/w/api.php';
 const TIMEOUT_MS = 8000;
 /** Cached lookups older than this are refetched when online (kept and shown if that fails). */
 const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/**
+ * Bumped when the way lists and sections are built changes: cached ones with another version are
+ * refetched (and only shown when that fails). 2 (1.7.1): disambiguation pages are read, not searched,
+ * and the book context is no longer added automatically.
+ */
+export const LIST_VERSION = 2;
+/** At most this many senses are kept per disambiguation page (ranked locally each time it's shown). */
+const MAX_SENSES = 100;
 // Wikimedia asks browser clients to identify themselves with this header (User-Agent can't be set from JS).
-const API_USER_AGENT = `OwlReader/${__APP_VERSION__} (https://github.com/pranjalparashar1/Owlreader)`;
+const API_USER_AGENT = `Owl/${__APP_VERSION__} (https://github.com/pranjalparashar1/owl)`;
 
 export interface LookupResponse {
   result: LookupResult;
@@ -174,6 +182,78 @@ async function searchHits(query: string): Promise<SearchHit[]> {
   return (data as { query?: { search?: SearchHit[] } })?.query?.search ?? [];
 }
 
+interface LinkedPage {
+  title: string;
+  description?: string;
+  extract?: string;
+  missing?: boolean;
+  pageprops?: { disambiguation?: string };
+}
+
+/**
+ * The articles a disambiguation page links to ("Epping, Essex", "Epping (UK Parliament
+ * constituency)", ...), with their short descriptions and intros. Wikipedia's editors already
+ * curated this list, so it beats a keyword search, which matches on any word in any article.
+ * Returned with likely senses first; `rankCandidates` reorders them for the page being read.
+ */
+async function fetchDisambiguationCandidates(title: string): Promise<LookupCandidate[]> {
+  const url =
+    `${ACTION}?action=query&titles=${encodeURIComponent(title)}&redirects=1` +
+    `&generator=links&gplnamespace=0&gpllimit=max` +
+    `&prop=${encodeURIComponent('description|pageprops|extracts')}&ppprop=disambiguation` +
+    `&exintro=1&explaintext=1&exsentences=2&exlimit=max&format=json&formatversion=2&origin=*`;
+  const { data } = await fetchJson(url);
+  const pages = (data as { query?: { pages?: LinkedPage[] } })?.query?.pages ?? [];
+  const self = title.toLowerCase();
+  return pages
+    .filter((p) => !p.missing && p.title && p.title.toLowerCase() !== self)
+    .filter((p) => !p.pageprops?.disambiguation && !/\(disambiguation\)$/i.test(p.title))
+    .sort((a, b) => senseBonus(b.title, self) - senseBonus(a.title, self) || a.title.localeCompare(b.title))
+    .slice(0, MAX_SENSES)
+    .map((p) => {
+      const extract = (p.extract ?? '').replace(/\s+/g, ' ').trim();
+      return {
+        title: p.title,
+        snippet: p.description || shortenExtract(extract, 1, 160),
+        rank: `${p.title} ${p.description ?? ''} ${extract.slice(0, 400)}`.toLowerCase(),
+      };
+    });
+}
+
+/** "Epping, Essex" and "Epping (constituency)" are senses of "Epping"; "Epping Forest" is a neighbour. */
+function senseBonus(title: string, query: string) {
+  const t = title.toLowerCase();
+  if (t.startsWith(`${query},`) || t.startsWith(`${query} (`)) return 2;
+  return t.startsWith(query) ? 1 : 0;
+}
+
+/** How many of the page's terms a candidate mentions; names of two or more words count triple. */
+export function scoreCandidate(haystack: string, terms: readonly string[]): number {
+  let score = 0;
+  const seen = new Set<string>();
+  for (const raw of terms) {
+    const term = raw.trim().toLowerCase();
+    if (term.length < 3 || seen.has(term)) continue;
+    seen.add(term);
+    if (haystack.includes(term)) score += term.includes(' ') ? 3 : 1;
+  }
+  return score;
+}
+
+/**
+ * Orders a result's candidates by how well they match what's around the word on the page (the
+ * X-Ray entities or the nearby names), keeping Wikipedia's order between equals, and keeps the
+ * first few. Runs on every display, so the same cached list fits each page it's looked up from.
+ */
+export function rankCandidates(result: LookupResult, terms: readonly string[] = []): LookupResult {
+  const list = result.candidates;
+  if (!list?.length) return result;
+  const limit = result.type === 'section' ? 3 : 4;
+  const scored = list.map((c, i) => ({ c, i, s: scoreCandidate(c.rank ?? `${c.title} ${c.snippet}`.toLowerCase(), terms) }));
+  scored.sort((a, b) => b.s - a.s || a.i - b.i);
+  return { ...result, candidates: scored.slice(0, limit).map(({ c }) => c) };
+}
+
 function toCandidates(hits: SearchHit[], exclude?: string): LookupCandidate[] {
   return (
     hits
@@ -182,7 +262,6 @@ function toCandidates(hits: SearchHit[], exclude?: string): LookupCandidate[] {
       // tapping it would just show this same list again, which looks like the tap did nothing
       .filter((h) => !exclude || h.title.toLowerCase() !== exclude)
       .filter((h, i, all) => all.findIndex((o) => o.title === h.title) === i)
-      .slice(0, 4)
       .map((h) => ({ title: h.title, snippet: stripHtml(h.snippet), ...(h.sectiontitle ? { section: h.sectiontitle } : {}) }))
   );
 }
@@ -217,17 +296,21 @@ export interface LookupOptions {
   exactTitle?: boolean;
   /** Bypass the saved copy and overwrite it. */
   refresh?: boolean;
-  /** The book's context hint ("Nvidia"), added to the search when there's no exact article. */
+  /**
+   * An extra search word ("Nvidia"), tried only when the word alone finds nothing. The reader no
+   * longer passes the book's context here: a title like "The Gathering Storm" matches unrelated
+   * articles. It's offered as a chip instead, and the page's own terms rank the results.
+   */
   context?: string;
 }
 
 /**
- * Lookup pipeline: normalize → IndexedDB cache → REST summary → (404 or disambiguation)
- * MediaWiki search, boosted with the book's context when it has one, which gives either a
- * matching section inside a broader article or up to 4 candidates.
+ * Lookup pipeline: normalize → IndexedDB cache → REST summary → disambiguation page's own links,
+ * or (404) MediaWiki search, which gives either a matching section inside a broader article or a
+ * list of candidates. Lists come back unranked: `rankCandidates` orders them for the page.
  *
- * Exact articles are cached under the query alone (they don't depend on the book). Search-based
- * results are cached per context, so the same word in two different books can resolve differently.
+ * Exact articles are cached under the query alone (they don't depend on the book). Results that
+ * used a `context` are cached per context.
  */
 export async function lookup(raw: string, opts: LookupOptions = {}): Promise<LookupResponse> {
   const query = opts.exactTitle ? raw.trim() : normalizeQuery(raw);
@@ -243,7 +326,10 @@ export async function lookup(raw: string, opts: LookupOptions = {}): Promise<Loo
     cached = !context || plain?.type === 'standard' ? plain : await getCachedLookup(ctxKey).catch(() => undefined);
     if (!cached && plain) cached = plain; // used only if fetching fails (offline)
   }
-  const usable = cached && (!context || cached.type === 'standard' || (cached.context ?? '') === context);
+  const usable =
+    cached &&
+    (cached.type === 'standard' || cached.v === LIST_VERSION) &&
+    (!context || cached.type === 'standard' || (cached.context ?? '') === context);
   if (cached && usable && Date.now() - (cached.cachedAt ?? 0) <= CACHE_TTL_MS) return fromCache(cached, key);
   try {
     return await fetchAndCache(query, key, context, ctxKey);
@@ -278,17 +364,37 @@ async function fetchAndCache(query: string, key: string, context: string | undef
     return { result, fromCache: false };
   }
 
+  const save = async (result: LookupResult) => {
+    const r = { ...result, v: LIST_VERSION };
+    await putCachedLookup(ctxKey, r).catch(() => {});
+    return { result: r, fromCache: false };
+  };
+
+  // A disambiguation page already lists the senses ("Epping, Essex", "Epping (UK Parliament
+  // constituency)"): read those links instead of a full-text search, which returns keyword noise.
   const isDisambig = summary?.type === 'disambiguation';
-  let hits = await searchHits(withContext(query, context));
-  // a context that matches nothing (an odd title) mustn't turn a findable word into "not found"
+  if (isDisambig) {
+    const senses = await fetchDisambiguationCandidates(summary?.title ?? query);
+    if (senses.length > 0) {
+      return save({
+        query,
+        title: summary?.title ?? query,
+        description: summary?.description,
+        extract: '',
+        type: 'disambiguation',
+        candidates: senses,
+        context,
+        cachedAt: Date.now(),
+      });
+    }
+  }
+
+  // Search the word alone first; the extra context word only if that finds nothing.
+  let hits = await searchHits(query);
   if (context && hits.length === 0) {
-    hits = await searchHits(query);
+    hits = await searchHits(withContext(query, context));
   }
   const candidates = toCandidates(hits, isDisambig ? (summary?.title?.toLowerCase() ?? key) : undefined);
-  const save = async (result: LookupResult) => {
-    await putCachedLookup(ctxKey, result).catch(() => {});
-    return { result, fromCache: false };
-  };
 
   // A lowercase or slightly-off query ("blenheim palace") 404s on the REST API but its top
   // search hit is an exact match: resolve it directly instead of showing a one-item list.
@@ -312,7 +418,7 @@ async function fetchAndCache(query: string, key: string, context: string | undef
       type: 'section',
       section: { title: top.sectiontitle, snippet: markSnippet(top.snippet) },
       pageUrl: sectionUrl(top.title, top.sectiontitle),
-      candidates: candidates.filter((c) => c.title !== top.title || c.section !== top.sectiontitle).slice(0, 3),
+      candidates: candidates.filter((c) => c.title !== top.title || c.section !== top.sectiontitle),
       context,
       cachedAt: Date.now(),
     });

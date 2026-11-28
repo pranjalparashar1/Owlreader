@@ -6,7 +6,7 @@ export interface Settings {
   /** Pages (swipe sideways) or Scroll (continuous vertical). */
   flow: 'paginated' | 'scrolled';
   /**
-   * What selecting text offers: OwlReader's Wikipedia pill ('wiki'), only iOS's own
+   * What selecting text offers: Owl's Wikipedia pill ('wiki'), only iOS's own
    * Look Up menu ('native'), or both side by side ('both').
    */
   lookupMode: LookupMode;

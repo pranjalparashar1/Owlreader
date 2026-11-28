@@ -39,7 +39,7 @@ async function pdfMeta(data: ArrayBuffer) {
 }
 
 export async function importBook(file: File): Promise<BookRecord> {
-  if (!isPdfFile(file)) throw new Error(`"${file.name}" isn't a PDF. OwlReader opens PDF files only.`);
+  if (!isPdfFile(file)) throw new Error(`"${file.name}" isn't a PDF. Owl opens PDF files only.`);
   requestPersistentStorage();
   const data = await file.arrayBuffer();
   let meta: { title?: string; author?: string; subject?: string; coverDataUrl?: string } = {};
