@@ -4,15 +4,6 @@ import type { ReaderTheme } from '../types';
 import type { LookupMode, Settings } from '../lib/settings';
 import { ChevronRight, MinusIcon, PagesIcon, PlusIcon, ScissorsIcon, ScrollIcon } from './icons';
 
-/** Effective X-Ray state for this book: off everywhere, This Page on demand, or Whole Book indexed. */
-export type XrayState = 'off' | 'page' | 'book';
-
-const XRAY_STATES: Array<{ id: XrayState; label: string }> = [
-  { id: 'off', label: 'Off' },
-  { id: 'page', label: 'Page' },
-  { id: 'book', label: 'Book' },
-];
-
 const LOOKUP_MODES: Array<{ id: LookupMode; label: string }> = [
   { id: 'wiki', label: 'Wiki' },
   { id: 'native', label: 'iOS' },
@@ -29,25 +20,21 @@ const THEMES: Array<{ id: ReaderTheme; label: string; swatch: string; ink: strin
 interface Props {
   open: boolean;
   settings: Settings;
-  /** Current PDF zoom as a multiplier of fit-width. */
+  /** Current PDF zoom relative to the default (1 = default, which is also the furthest out). */
   zoom: number;
   onSettings: (patch: Partial<Settings>) => void;
   /** Theme changes go through the shell, which crossfades them. */
   onTheme: (theme: ReaderTheme) => void;
   /** A theme being switched to: its swatch shows as selected right away. */
   pendingTheme?: ReaderTheme | null;
-  /** 1 = in, -1 = out, 0 = fit the text to the screen */
+  /** 1 = in, -1 = out, 0 = back to the default zoom */
   onZoom: (dir: 1 | -1 | 0) => void;
   onClose: () => void;
-  xray: XrayState;
-  onXray: (state: XrayState) => void;
-  /** Whole-book indexing progress, when indexing is on. */
-  indexProgress?: { indexed: number; total: number } | null;
   /** Open this book's saved clips. */
   onClips: () => void;
 }
 
-/** Reading settings popover: clips, theme, layout, look up, X-Ray and zoom. */
+/** Reading settings popover: clips, theme, layout, look up and zoom. */
 export default function ReaderSettings({
   open,
   settings,
@@ -57,9 +44,6 @@ export default function ReaderSettings({
   pendingTheme,
   onZoom,
   onClose,
-  xray,
-  onXray,
-  indexProgress,
   onClips,
 }: Props) {
   useEffect(() => {
@@ -159,49 +143,13 @@ export default function ReaderSettings({
           ))}
         </div>
 
-        <Label>X-Ray</Label>
-        <div className="grid grid-cols-3 gap-1 rounded-xl bg-surface-2 p-1" role="radiogroup" aria-label="X-Ray">
-          {XRAY_STATES.map((m) => (
-            <button
-              key={m.id}
-              role="radio"
-              aria-checked={xray === m.id}
-              onClick={() => onXray(m.id)}
-              className={`seg-press rounded-lg py-2 text-[14px] font-medium ${
-                xray === m.id ? 'bg-surface shadow-sm ring-1 ring-line' : 'text-muted'
-              }`}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-        {xray === 'book' && indexProgress && (
-          <div className="mt-2">
-            <div
-              className="h-1.5 overflow-hidden rounded-full bg-surface-2"
-              role="progressbar"
-              aria-label="Whole-book index"
-              aria-valuemin={0}
-              aria-valuemax={indexProgress.total}
-              aria-valuenow={indexProgress.indexed}
-            >
-              <div
-                className="h-full rounded-full bg-accent transition-[width]"
-                style={{ width: `${indexProgress.total ? (indexProgress.indexed / indexProgress.total) * 100 : 0}%` }}
-              />
-            </div>
-            <span className="sr-only" data-testid="index-progress">
-              {indexProgress.indexed >= indexProgress.total ? 'done' : `${indexProgress.indexed}/${indexProgress.total}`}
-            </span>
-          </div>
-        )}
-
         <Label>Zoom</Label>
         <Stepper
           value={`${Math.round(zoom * 100)}%`}
           onValue={() => onZoom(0)}
-          valueLabel={`Zoom ${Math.round(zoom * 100)}%. Fit text to screen`}
+          valueLabel={`Zoom ${Math.round(zoom * 100)}%. Default zoom`}
           onMinus={() => onZoom(-1)}
+          minusDisabled={zoom <= 1.001}
           onPlus={() => onZoom(1)}
           minusLabel="Zoom out"
           plusLabel="Zoom in"
@@ -220,6 +168,7 @@ function Stepper(props: {
   onValue?: () => void;
   valueLabel?: string;
   onMinus: () => void;
+  minusDisabled?: boolean;
   onPlus: () => void;
   minusLabel: string;
   plusLabel: string;
@@ -227,7 +176,12 @@ function Stepper(props: {
   const btn = 'flex h-10 items-center justify-center rounded-lg active:bg-line';
   return (
     <div className="grid grid-cols-[1fr_1.4fr_1fr] items-center gap-1 rounded-xl bg-surface-2 p-1">
-      <button className={btn} onClick={props.onMinus} aria-label={props.minusLabel}>
+      <button
+        className={`${btn} disabled:opacity-30`}
+        onClick={props.onMinus}
+        disabled={props.minusDisabled}
+        aria-label={props.minusLabel}
+      >
         <MinusIcon size={18} />
       </button>
       {props.onValue ? (

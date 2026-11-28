@@ -10,18 +10,13 @@ export interface Settings {
    * Look Up menu ('native'), or both side by side ('both').
    */
   lookupMode: LookupMode;
-  /**
-   * X-Ray: 'off' runs no entity scanning at all and hides the X-Ray button. 'on' shows the button
-   * (This Page, on demand); whole-book indexing is a separate opt-in per book (BookRecord.xrayWholeBook).
-   */
-  xray: 'off' | 'on';
 }
 
 export type LookupMode = 'wiki' | 'native' | 'both';
 
 const KEY = 'owl.settings.v1';
 const THEME_COLOR: Record<ReaderTheme, string> = { light: '#faf7f2', sepia: '#efe5cf', dark: '#161514', black: '#000000' };
-const DEFAULTS: Settings = { theme: 'light', flow: 'paginated', lookupMode: 'wiki', xray: 'on' };
+const DEFAULTS: Settings = { theme: 'light', flow: 'paginated', lookupMode: 'wiki' };
 
 function load(): Settings {
   try {
@@ -34,7 +29,6 @@ function load(): Settings {
       if (saved.flow === 'paginated' || saved.flow === 'scrolled') out.flow = saved.flow;
       if (saved.lookupMode === 'wiki' || saved.lookupMode === 'native' || saved.lookupMode === 'both')
         out.lookupMode = saved.lookupMode;
-      if (saved.xray === 'off' || saved.xray === 'on') out.xray = saved.xray;
       return out;
     }
   } catch {
@@ -57,23 +51,4 @@ export function useSettings() {
   }, [settings]);
   const update = useCallback((patch: Partial<Settings>) => setSettings((s) => ({ ...s, ...patch })), []);
   return [settings, update] as const;
-}
-
-export function localFlag(key: string): [boolean, () => void] {
-  let v = false;
-  try {
-    v = localStorage.getItem(key) === '1';
-  } catch {
-    /* ignore */
-  }
-  return [
-    v,
-    () => {
-      try {
-        localStorage.setItem(key, '1');
-      } catch {
-        /* ignore */
-      }
-    },
-  ];
 }

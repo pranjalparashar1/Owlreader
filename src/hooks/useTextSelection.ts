@@ -70,10 +70,6 @@ export function setBlockSelection() {
   emit({ text: '', any: true, block: true });
 }
 
-export function getSelectionText() {
-  return state.text;
-}
-
 function subscribe(cb: () => void) {
   listeners.add(cb);
   return () => listeners.delete(cb);

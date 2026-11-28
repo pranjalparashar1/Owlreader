@@ -8,10 +8,12 @@ import { PreviewCache, encodePreview } from '../lib/previews';
 import { tapZone, type OutlineItem, type ReaderHandle, type ReaderProps } from './readerTypes';
 import { prefersReducedMotion } from '../hooks/useFocusTrap';
 
-const MIN_ZOOM = 0.6;
+/** Zoom is a multiplier of fit-width. The default zoom (fit text) is also the furthest out. */
 const MAX_ZOOM = 4;
+const MAX_OVER_DEFAULT = 2.5; // a big default (narrow text column) can still zoom this far past it
 const ZOOM_STEP = 1.25;
-const PAD = 8; // breathing room around a page at fit-width
+const ZOOM_ANIM_MS = 280; // zoom buttons and the pinch's spring back, on the compositor
+const PAD = 8; // breathing room around a page at fit-width (inside the safe area)
 const GAP = 10; // between pages in Scroll mode (matches .pdf-scrolled .pdf-page margin)
 /** First pass: fast to draw and cheap to upload to the GPU while the reader is moving. */
 const FIRST_PASS_PIXELS = 2_200_000;
@@ -33,13 +35,13 @@ const PREVIEW_AHEAD = 40; // idle prefetch covers this many pages in the reading
 const PREVIEW_BEHIND = 15; // …and this many behind
 const PREVIEW_BATCH = 1; // per idle task, so a touch never waits long on the main thread
 
-const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
-/** Fit text: the text column fills the screen, with this much space each side (CSS px). */
+/** Fit text: the text column fills the safe area (clear of the Dynamic Island and the rounded
+ * corners in landscape), with this much space each side (CSS px). */
 const FIT_MARGIN = 14;
 const FIT_MAX = 2.5;
 const FIT_SAMPLE = 6; // pages read to find the text column
-/** Saved zoom that means "fit text" (0, absent, or the pre-1.8.2 default of fit width). */
-const isAutoZoom = (z: number | undefined) => !z || z === 1;
+/** Past the zoom limits a pinch keeps moving, ever more slowly, then springs back (like iOS). */
+const rubberBand = (s: number, lo: number, hi: number) => (s < lo ? lo * (s / lo) ** 0.35 : s > hi ? hi * (s / hi) ** 0.35 : s);
 
 type TextBox = { x0: number; x1: number };
 
@@ -167,6 +169,8 @@ class RenderScheduler {
   private timer: number | undefined;
   private quietSince = performance.now();
   private _scrolling = false;
+  /** A pinch or zoom animation is running: nothing renders until it ends (see pump). */
+  private _held = false;
   current = 1;
   /** Way the reader is moving: of two pages equally near, the one ahead goes first. */
   dir = 1;
@@ -177,6 +181,12 @@ class RenderScheduler {
   set scrolling(v: boolean) {
     this._scrolling = v;
     if (!v) this.quietSince = performance.now();
+  }
+  set held(v: boolean) {
+    this._held = v;
+    if (v) return;
+    this.quietSince = performance.now();
+    this.pump();
   }
   request(key: string, page: number, bias: number, task: Task) {
     this.queue.set(key, { page, bias, task });
@@ -205,7 +215,7 @@ class RenderScheduler {
   }
   pump = () => {
     window.clearTimeout(this.timer);
-    if (this.running || this._scrolling) return;
+    if (this.running || this._scrolling || this._held) return;
     let task: Task | undefined;
     if (this.queue.size) {
       let bestKey = '';
@@ -253,7 +263,8 @@ interface Props extends ReaderProps {
  * stand in for the rest). Each live page has a canvas (a fast first pass, then a sharp pass for
  * the current page once the reader settles) and PDF.js's TextLayer on top for native selection.
  * Page sizes are fetched lazily around the current page instead of for the whole document.
- * Zoom is a multiplier of fit-to-width, so rotating keeps the same page and relative zoom.
+ * Zoom is a multiplier of fit-to-width, so rotating keeps the same page and relative zoom. Every
+ * book opens at the default zoom (fit text, inside the safe area), and that's also the furthest out.
  */
 // memo: the shell re-renders on every chrome toggle and selection change; the reader needn't.
 const PdfReader = memo(
@@ -272,12 +283,16 @@ const PdfReader = memo(
     const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
     const [sizes, setSizes] = useState<Size[]>([]);
     const [page, setPage] = useState(() => Math.max(1, book.progress.pdfPage ?? 1));
-    const [manualZoom, setManualZoom] = useState(() => clampZoom(book.progress.pdfScale || 1));
-    /** Fit text (the default): zoom follows the text column, in either orientation. */
-    const [autoFit, setAutoFit] = useState(() => isAutoZoom(book.progress.pdfScale));
+    const [manualZoom, setManualZoom] = useState(1);
+    /** At the default zoom (fit text): zoom follows the text column, in either orientation. A
+     * saved zoom is never restored: every open starts here. */
+    const [autoFit, setAutoFit] = useState(true);
     const [textBox, setTextBox] = useState<TextBox | null>(null);
     const [outline, setOutline] = useState<OutlineItem[] | null>(null);
     const [viewport, setViewport] = useState<Size>({ w: 0, h: 0 });
+    /** Safe-area insets left and right (the Dynamic Island side in landscape), from CSS env(). */
+    const [insets, setInsets] = useState({ l: 0, r: 0 });
+    const insetProbe = useRef<HTMLDivElement>(null);
     const [range, setRange] = useState<[number, number]>([page - 1, page + 1]);
 
     const numPages = sizes.length;
@@ -379,6 +394,10 @@ const PdfReader = memo(
     useEffect(() => {
       const el = scrollerRef.current!;
       const measure = () => {
+        const cs = insetProbe.current && getComputedStyle(insetProbe.current);
+        const l = cs ? parseFloat(cs.paddingLeft) || 0 : 0;
+        const r = cs ? parseFloat(cs.paddingRight) || 0 : 0;
+        setInsets((v) => (v.l === l && v.r === r ? v : { l, r }));
         const next = { w: el.clientWidth, h: el.clientHeight };
         setViewport((v) => {
           if (v.w === next.w && v.h === next.h) return v;
@@ -389,18 +408,31 @@ const PdfReader = memo(
       const ro = new ResizeObserver(measure);
       ro.observe(el);
       measure();
-      return () => ro.disconnect();
+      // the insets change with rotation, sometimes a beat after the resize
+      const mq = matchMedia('(orientation: landscape)');
+      mq.addEventListener('change', measure);
+      return () => {
+        ro.disconnect();
+        mq.removeEventListener('change', measure);
+      };
     }, []);
 
     // ---- per-page CSS size
-    const availW = Math.max(100, viewport.w - PAD * 2);
+    const safeW = Math.max(100, viewport.w - insets.l - insets.r);
+    /** Horizontal centre of the safe area: where the text column sits at the default zoom. */
+    const safeMid = insets.l + safeW / 2;
+    const availW = Math.max(100, safeW - PAD * 2);
     const fitZoom = useMemo(() => {
       if (!textBox || !viewport.w) return 1;
-      const z = (viewport.w - FIT_MARGIN * 2) / ((textBox.x1 - textBox.x0) * availW);
+      const z = (safeW - FIT_MARGIN * 2) / ((textBox.x1 - textBox.x0) * availW);
       return z < 1.02 ? 1 : Math.min(FIT_MAX, z);
-    }, [textBox, viewport.w, availW]);
-    const zoom = autoFit ? fitZoom : manualZoom;
-    const fitting = autoFit && fitZoom > 1;
+    }, [textBox, viewport.w, safeW, availW]);
+    const maxZoom = Math.max(MAX_ZOOM, fitZoom * MAX_OVER_DEFAULT);
+    const zoom = autoFit ? fitZoom : Math.min(maxZoom, Math.max(fitZoom, manualZoom));
+    const atDefault = autoFit || zoom <= fitZoom * 1.001;
+    const fitting = atDefault && fitZoom > 1;
+    const limitsRef = useRef({ min: fitZoom, max: maxZoom });
+    limitsRef.current = { min: fitZoom, max: maxZoom };
     // a zoom that isn't a pinch (fit text arriving, rotating, the Fit button) keeps the reading spot
     const lastZoom = useRef(zoom);
     if (lastZoom.current !== zoom) {
@@ -492,9 +524,11 @@ const PdfReader = memo(
       if (!el || !numPages || !viewport.w) return;
       const focal = zoomFocal.current;
       zoomFocal.current = null;
-      // clear any pinch preview transform now that real sizes are in the DOM
-      for (const p of pageRefs.current) if (p?.style.transform) p.style.transform = '';
-      if (trackRef.current?.style.transform) trackRef.current.style.transform = '';
+      // clear the zoom preview transform in the same frame the real sizes land
+      if (el.style.transform) {
+        el.style.transition = 'none';
+        el.style.transform = '';
+      }
 
       if (focal) {
         const pageEl = pageRefs.current[focal.page - 1];
@@ -609,19 +643,26 @@ const PdfReader = memo(
     }, [doc, numPages, page, reportSize, scheduler]);
 
     // ---- report progress through the shell's single funnel
-    const firstReport = useRef(true);
     useEffect(() => {
       if (!numPages) return;
       const fraction = numPages > 1 ? (page - 1) / (numPages - 1) : 1;
-      propsRef.current.onLocation({ fraction, page, pageCount: numPages, label: `Page ${page} of ${numPages}`, zoom });
-      propsRef.current.onProgressChange({
-        pdfPage: page,
-        pdfScale: autoFit ? 0 : zoom,
-        percentage: Math.round((page / numPages) * 1000) / 10,
+      // zoom is shown relative to the default: 100% = fit text
+      propsRef.current.onLocation({
+        fraction,
+        page,
+        pageCount: numPages,
+        label: `Page ${page} of ${numPages}`,
+        zoom: zoom / fitZoom,
       });
-      if (firstReport.current) firstReport.current = false;
-      else propsRef.current.onPageTurn();
-    }, [page, zoom, autoFit, numPages]);
+      propsRef.current.onProgressChange({ pdfPage: page, percentage: Math.round((page / numPages) * 1000) / 10 });
+    }, [page, zoom, fitZoom, numPages]);
+    // a page turn hides the chrome (not the first report, and not a zoom)
+    const reportedPage = useRef(0);
+    useEffect(() => {
+      if (!numPages) return;
+      if (reportedPage.current && reportedPage.current !== page) propsRef.current.onPageTurn();
+      reportedPage.current = page;
+    }, [page, numPages]);
 
     const goToPage = useCallback(
       (n: number, smooth = false, frac = 0) => {
@@ -652,17 +693,20 @@ const PdfReader = memo(
       else goToPage(pageRef.current - 1, true);
     }, [goToPage, paged]);
 
-    /** Change zoom keeping the point under (mx, my) — viewport coords — fixed on screen. */
+    /** Change zoom keeping the point under (mx, my) — viewport coords — fixed on screen. At or
+     * below the default zoom it snaps back to the default. */
     const zoomAt = useCallback(
       (nextZoom: number, mx?: number, my?: number) => {
         const el = scrollerRef.current;
-        const z = clampZoom(nextZoom);
-        if (!el || (z === zoom && !autoFit)) return;
+        const z = Math.min(maxZoom, nextZoom);
+        const toDefault = z <= fitZoom * 1.001;
+        if (!el || (toDefault ? autoFit : z === zoom && !autoFit)) return;
         const p = pageRef.current;
         const pageEl = pageRefs.current[p - 1];
         const container = paged ? slotRefs.current[p - 1] : el;
         if (pageEl && container) {
-          const rect = container.getBoundingClientRect();
+          // the scroller may be scaled by a zoom preview: measure its untransformed parent (same box)
+          const rect = el.parentElement!.getBoundingClientRect();
           const cx = (mx ?? rect.left + rect.width / 2) - rect.left;
           const cy = (my ?? rect.top + rect.height / 2) - rect.top;
           zoomFocal.current = {
@@ -673,10 +717,68 @@ const PdfReader = memo(
             fy: (container.scrollTop + cy - pageEl.offsetTop) / pageEl.offsetHeight,
           };
         }
-        setManualZoom(z);
-        setAutoFit(false);
+        setManualZoom(toDefault ? fitZoom : z);
+        setAutoFit(toDefault);
       },
-      [zoom, paged, autoFit],
+      [zoom, paged, autoFit, fitZoom, maxZoom],
+    );
+
+    /** The scroller is the one layer scaled while zooming: viewport-sized, so the compositor only
+     * scales what's on screen, the same way in Pages and Scroll mode. */
+    const zoomAnim = useRef<{ timer: number; done: () => void } | null>(null);
+    const setPreview = useCallback((scale: number, ox: number, oy: number, ms = 0) => {
+      const el = scrollerRef.current;
+      if (!el) return;
+      el.style.transformOrigin = `${ox}px ${oy}px`;
+      el.style.transition = ms ? `transform ${ms}ms var(--ease-ios)` : 'none';
+      el.style.transform = scale === 1 && !ms ? '' : `scale(${scale})`;
+    }, []);
+    /** Animates the preview to `scale` on the compositor, then calls `done` (once). */
+    const animatePreview = useCallback(
+      (scale: number, ox: number, oy: number, done: () => void) => {
+        zoomAnim.current?.done();
+        if (prefersReducedMotion()) return done();
+        setPreview(scale, ox, oy, ZOOM_ANIM_MS);
+        let fired = false;
+        const finish = () => {
+          if (fired) return;
+          fired = true;
+          window.clearTimeout(zoomAnim.current?.timer);
+          zoomAnim.current = null;
+          done();
+        };
+        zoomAnim.current = { timer: window.setTimeout(finish, ZOOM_ANIM_MS + 40), done: finish };
+      },
+      [setPreview],
+    );
+    /** Zoom buttons: scale the screen to the new zoom around its centre, then lay it out for real.
+     * A tap during the animation retargets it, so quick taps add up in one smooth motion. */
+    const zoomRef = useRef(zoom);
+    zoomRef.current = zoom;
+    const stepTarget = useRef<number | null>(null);
+    const stepZoom = useCallback(
+      (dir: 1 | -1 | 0) => {
+        const el = scrollerRef.current;
+        if (!el) return;
+        const from = stepTarget.current ?? zoom;
+        const want = dir === 0 ? fitZoom : dir > 0 ? from * ZOOM_STEP : from / ZOOM_STEP;
+        const t = Math.min(maxZoom, Math.max(fitZoom, want));
+        if (Math.abs(t - from) < 1e-3) return;
+        if (stepTarget.current !== null && zoomAnim.current) {
+          window.clearTimeout(zoomAnim.current.timer); // retarget: only the last tap commits
+          zoomAnim.current = null;
+        }
+        stepTarget.current = t;
+        const rect = el.parentElement!.getBoundingClientRect();
+        scheduler.held = true;
+        animatePreview(t / zoom, rect.width / 2, rect.height / 2, () => {
+          stepTarget.current = null;
+          scheduler.held = false;
+          if (Math.abs(t - zoom) < 1e-3) return setPreview(1, 0, 0); // nothing to re-lay out
+          zoomAt(t, rect.left + rect.width / 2, rect.top + rect.height / 2);
+        });
+      },
+      [zoom, fitZoom, maxZoom, zoomAt, animatePreview, setPreview, scheduler],
     );
 
     // ---- scrubber micro-thumbnails: tiny renders that bypass the queue (they're <10 ms and the
@@ -872,19 +974,12 @@ const PdfReader = memo(
       [doc, numPages, paged, scaleOf, sizes],
     );
 
-    // ---- page text for X-Ray and lookup context. Background requests go through the idle queue,
-    // lowest priority, so they run only after visible pages and size probes, and never mid-scroll.
     const getPageText = useCallback(
-      (n: number, opts: { idle?: boolean } = {}): Promise<string> => {
-        if (!doc || n < 1 || n > doc.numPages) return Promise.reject(new Error('No such page'));
-        const read = async () =>
-          pageTextFromItems((await (await doc.getPage(n)).getTextContent()).items as Array<{ str?: string }>);
-        if (!opts.idle) return read();
-        return new Promise((resolve, reject) => {
-          scheduler.requestIdle(`text${n}`, 20, () => read().then(resolve, reject));
-        });
+      async (n: number): Promise<string> => {
+        if (!doc || n < 1 || n > doc.numPages) throw new Error('No such page');
+        return pageTextFromItems((await (await doc.getPage(n)).getTextContent()).items as Array<{ str?: string }>);
       },
-      [doc, scheduler],
+      [doc],
     );
 
     useImperativeHandle(
@@ -896,7 +991,7 @@ const PdfReader = memo(
         getPageText,
         next,
         prev,
-        zoom: (dir) => (dir === 0 ? setAutoFit(true) : zoomAt(dir > 0 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP)),
+        zoom: stepZoom,
         getOutline: async () => {
           if (!doc) return [];
           if (outline) return outline;
@@ -906,7 +1001,7 @@ const PdfReader = memo(
         },
         prepareTheme,
       }),
-      [goToPage, renderThumbnail, getPageText, doc, next, prev, zoom, zoomAt, outline, prepareTheme],
+      [goToPage, renderThumbnail, getPageText, doc, next, prev, stepZoom, outline, prepareTheme],
     );
 
     // ---- keyboard
@@ -920,46 +1015,67 @@ const PdfReader = memo(
       return () => window.removeEventListener('keydown', onKey);
     }, [next, prev]);
 
-    // ---- pinch to zoom: GPU transform preview while pinching, one crisp re-render at the end
-    const zoomRef = useRef(zoom);
-    zoomRef.current = zoom;
+    // ---- pinch to zoom. While the fingers move, the only work per touch event is one transform on
+    // the viewport-sized scroller (a compositor-only change; the render queue is held so pdf.js
+    // never draws mid-gesture). Past the limits it rubber-bands; on release it springs back on the
+    // compositor, then the page is laid out once at the new zoom and re-rendered sharp.
     useEffect(() => {
       const el = scrollerRef.current!;
-      let pinch: { dist: number; mx: number; my: number; target: HTMLElement } | null = null;
+      let pinch: { dist: number; ox: number; oy: number; mx: number; my: number } | null = null;
       let scale = 1;
+      let frame = 0;
       const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+      const bounds = () => {
+        const z = zoomRef.current;
+        return { lo: limitsRef.current.min / z, hi: limitsRef.current.max / z };
+      };
       const onStart = (e: TouchEvent) => {
         if (e.touches.length !== 2) return;
-        const p = pageRef.current;
-        const pageEl = pageRefs.current[p - 1];
-        const target = paged ? pageEl : trackRef.current;
-        const container = paged ? slotRefs.current[p - 1] : el;
-        if (!target || !container || !pageEl) return;
+        zoomAnim.current?.done();
         const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
         const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-        const rect = container.getBoundingClientRect();
-        const ox = container.scrollLeft + mx - rect.left - (paged ? pageEl.offsetLeft : 0);
-        const oy = container.scrollTop + my - rect.top - (paged ? pageEl.offsetTop : 0);
-        target.style.transformOrigin = `${ox}px ${oy}px`;
-        target.style.willChange = 'transform';
-        pinch = { dist: dist(e.touches), mx, my, target };
+        const rect = el.parentElement!.getBoundingClientRect();
+        pinch = { dist: dist(e.touches) || 1, ox: mx - rect.left, oy: my - rect.top, mx, my };
         scale = 1;
+        scheduler.held = true;
+        setPreview(1, pinch.ox, pinch.oy);
+      };
+      const paint = () => {
+        frame = 0;
+        if (pinch) el.style.transform = `scale(${scale})`;
       };
       const onMove = (e: TouchEvent) => {
         // No preventDefault: `touch-action: pan-x pan-y` already stops Safari's page zoom, and a
         // non-passive touchmove would make every scroll gesture wait on the main thread.
         if (!pinch || e.touches.length !== 2) return;
-        const z = zoomRef.current;
-        scale = Math.min(MAX_ZOOM / z, Math.max(MIN_ZOOM / z, dist(e.touches) / pinch.dist));
-        pinch.target.style.transform = `scale(${scale})`;
+        const { lo, hi } = bounds();
+        scale = rubberBand(dist(e.touches) / pinch.dist, lo, hi);
+        // coalesce to one style write per frame, however fast the touch events arrive
+        if (!frame) frame = requestAnimationFrame(paint);
       };
       const onEnd = (e: TouchEvent) => {
         if (!pinch || e.touches.length >= 2) return;
-        const { mx, my, target } = pinch;
+        const { ox, oy, mx, my } = pinch;
         pinch = null;
-        target.style.willChange = '';
-        if (Math.abs(scale - 1) < 0.03) target.style.transform = '';
-        else zoomAt(zoomRef.current * scale, mx, my); // transform is cleared in the layout effect
+        cancelAnimationFrame(frame);
+        frame = 0;
+        const { lo, hi } = bounds();
+        const end = Math.min(hi, Math.max(lo, scale));
+        const release = () => (scheduler.held = false);
+        if (Math.abs(end - 1) < 0.03) {
+          // nothing to change (or pinched out at the default): spring back to where it was
+          animatePreview(1, ox, oy, () => {
+            setPreview(1, ox, oy);
+            release();
+          });
+          return;
+        }
+        const commit = () => {
+          release();
+          zoomAt(zoomRef.current * end, mx, my); // the transform is cleared in the layout effect
+        };
+        if (Math.abs(end - scale) > 1e-3) animatePreview(end, ox, oy, commit);
+        else commit();
       };
       const stopGesture = (e: Event) => e.preventDefault();
       el.addEventListener('touchstart', onStart, { passive: true });
@@ -968,13 +1084,14 @@ const PdfReader = memo(
       el.addEventListener('touchcancel', onEnd, { passive: true });
       el.addEventListener('gesturestart', stopGesture);
       return () => {
+        cancelAnimationFrame(frame);
         el.removeEventListener('touchstart', onStart);
         el.removeEventListener('touchmove', onMove);
         el.removeEventListener('touchend', onEnd);
         el.removeEventListener('touchcancel', onEnd);
         el.removeEventListener('gesturestart', stopGesture);
       };
-    }, [paged, zoomAt]);
+    }, [zoomAt, scheduler, setPreview, animatePreview]);
 
     // ---- taps: edges turn pages (Pages mode), centre toggles the chrome
     const lastSelectionAt = useRef(0);
@@ -1005,16 +1122,22 @@ const PdfReader = memo(
     const isActive = (n: number) => n >= lo && n <= hi;
     const ready = doc && numPages > 0 && viewport.w > 0;
 
-    // Scroll mode mounts only the boxes around the current page (plus the live canvas range);
-    // spacers above and below stand in for the rest, so DOM size is flat however long the PDF is.
-    const mountLo = paged ? 1 : Math.max(1, Math.min(lo, mountAt - MOUNT_AROUND));
-    const mountHi = paged ? numPages : Math.min(numPages, Math.max(hi, mountAt + MOUNT_AROUND));
+    // Only the boxes around the current page (plus the live canvas range) are mounted, so a zoom
+    // re-lays out a fixed number of pages however long the PDF is. Scroll mode: ~17 boxes, spacers
+    // stand in for the rest. Pages mode: the prefetched previews' range (so a jump still lands on
+    // one), the other slots stay as empty snap stops.
+    const around = paged ? PREVIEW_AHEAD : MOUNT_AROUND;
+    const at = paged ? page : mountAt;
+    const mountLo = Math.max(1, Math.min(lo, at - around));
+    const mountHi = Math.min(numPages, Math.max(hi, at + around));
+    /** Left offset that centres the text column in the safe area at the default zoom. */
+    const fitShift = (w: number) => (fitting && textBox ? Math.round(safeMid - ((textBox.x0 + textBox.x1) / 2) * w) : undefined);
+    const sideInsets = insets.l + insets.r;
     mountedRef.current = [mountLo, mountHi];
 
     const renderPage = (i: number) => {
       const n = i + 1;
       const { w, h } = cssSize(i);
-      const tb = fitting ? textBox : null;
       const node = (
         <PdfPage
           key={n}
@@ -1035,7 +1158,7 @@ const PdfReader = memo(
           onRealSize={reportSize}
           onPainted={onPainted}
           prepared={prepared.current}
-          shift={tb ? Math.round(viewport.w / 2 - ((tb.x0 + tb.x1) / 2) * w) : undefined}
+          shift={fitShift(w)}
         />
       );
       if (!paged) return node;
@@ -1049,7 +1172,10 @@ const PdfReader = memo(
           // own native scroll view, and hundreds of them make the carousel stutter
           className={isActive(n) ? 'pdf-slot is-live' : 'pdf-slot'}
         >
-          <div className="pdf-slot-inner" style={{ width: fitting ? viewport.w : Math.max(viewport.w, w + PAD * 2) }}>
+          <div
+            className="pdf-slot-inner"
+            style={{ width: fitting ? viewport.w : Math.max(viewport.w, w + PAD * 2 + sideInsets) }}
+          >
             {node}
           </div>
         </div>
@@ -1057,7 +1183,13 @@ const PdfReader = memo(
     };
 
     const pageNodes: React.ReactNode[] = [];
-    if (ready) for (let i = mountLo - 1; i < mountHi; i++) pageNodes.push(renderPage(i));
+    if (ready && paged) {
+      for (let i = 0; i < numPages; i++) {
+        const n = i + 1;
+        if (n >= mountLo && n <= mountHi) pageNodes.push(renderPage(i));
+        else pageNodes.push(<div key={n} className="pdf-slot" ref={(el) => void (slotRefs.current[i] = el)} />);
+      }
+    } else if (ready) for (let i = mountLo - 1; i < mountHi; i++) pageNodes.push(renderPage(i));
 
     // Spacers look like a column of blank pages, so a fast fling past the mounted boxes still
     // shows pages (exact for uniform PDFs, close enough for mixed ones until it settles).
@@ -1065,7 +1197,7 @@ const PdfReader = memo(
       if (!ready || height <= 0) return null;
       const { w, h } = cssSize(0);
       const bg = PAGE_BG[theme];
-      const tb = fitting ? textBox : null;
+      const shift = fitShift(w);
       return (
         <div
           aria-hidden
@@ -1074,7 +1206,7 @@ const PdfReader = memo(
             height,
             backgroundImage: `repeating-linear-gradient(to bottom, ${bg} 0, ${bg} ${h}px, transparent ${h}px, transparent ${h + GAP}px)`,
             backgroundSize: `${w}px 100%`,
-            backgroundPosition: tb ? `${Math.round(viewport.w / 2 - ((tb.x0 + tb.x1) / 2) * w)}px top` : undefined,
+            backgroundPosition: shift !== undefined ? `${shift}px top` : undefined,
           }}
         />
       );
@@ -1097,7 +1229,7 @@ const PdfReader = memo(
             <div
               ref={trackRef}
               className="pdf-track"
-              style={{ width: fitting ? viewport.w : Math.max(viewport.w, geo.maxW + PAD * 2) }}
+              style={{ width: fitting ? viewport.w : Math.max(viewport.w, geo.maxW + PAD * 2 + sideInsets) }}
             >
               {ready && spacer(geo.tops[mountLo - 1])}
               {pageNodes}
@@ -1106,6 +1238,7 @@ const PdfReader = memo(
           )}
         </div>
 
+        <div ref={insetProbe} className="safe-probe" aria-hidden />
         {!doc && (
           <div className="absolute inset-0 flex items-center justify-center">
             <span className="h-6 w-6 animate-spin rounded-full border-2 border-accent border-t-transparent" />

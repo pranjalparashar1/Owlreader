@@ -259,6 +259,7 @@ button {
   touch-action: pan-x pan-y; /* no browser pinch-zoom; our pinch handler zooms the PDF */
   scrollbar-width: none;
   overflow-anchor: none; /* we restore position ourselves; browser anchoring would double-correct */
+  will-change: transform; /* zoom previews scale this layer; keep it composited so a pinch starts at once */
 }
 .pdf-scroller::-webkit-scrollbar {
   display: none;
@@ -305,7 +306,10 @@ button {
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  padding: calc(8px + env(safe-area-inset-top) * 1.25) 8px calc(8px + env(safe-area-inset-bottom));
+  /* left/right: clear of the Dynamic Island and rounded corners in landscape (PdfReader adds the
+     same insets to the box widths) */
+  padding: calc(8px + env(safe-area-inset-top) * 1.25) calc(8px + env(safe-area-inset-right))
+    calc(8px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left));
   box-sizing: border-box;
 }
 .pdf-track {
@@ -313,7 +317,10 @@ button {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: calc(8px + env(safe-area-inset-top) * 1.25) 8px calc(8px + env(safe-area-inset-bottom));
+  /* left/right: clear of the Dynamic Island and rounded corners in landscape (PdfReader adds the
+     same insets to the box widths) */
+  padding: calc(8px + env(safe-area-inset-top) * 1.25) calc(8px + env(safe-area-inset-right))
+    calc(8px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left));
   box-sizing: border-box;
   min-height: 100%;
 }
@@ -332,6 +339,14 @@ button {
   align-self: stretch;
   background-repeat: no-repeat;
   background-position: center top;
+}
+/* Read by PdfReader to keep the text column inside the safe area. */
+.safe-probe {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
 }
 /* Plain opaque bitmap: dark/black/sepia are baked in when the page renders, so no CSS filter here. */
 .pdf-canvas {
