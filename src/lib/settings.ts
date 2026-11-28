@@ -10,12 +10,17 @@ export interface Settings {
    * Look Up menu ('native'), or both side by side ('both').
    */
   lookupMode: LookupMode;
+  /**
+   * X-Ray: 'off' runs no entity scanning at all and hides the X-Ray button. 'on' shows the button
+   * (This Page, on demand); whole-book indexing is a separate opt-in per book (BookRecord.xrayWholeBook).
+   */
+  xray: 'off' | 'on';
 }
 
 export type LookupMode = 'wiki' | 'native' | 'both';
 
 const KEY = 'owl.settings.v1';
-const DEFAULTS: Settings = { theme: 'light', flow: 'paginated', lookupMode: 'wiki' };
+const DEFAULTS: Settings = { theme: 'light', flow: 'paginated', lookupMode: 'wiki', xray: 'on' };
 
 function load(): Settings {
   try {
@@ -28,6 +33,7 @@ function load(): Settings {
       if (saved.flow === 'paginated' || saved.flow === 'scrolled') out.flow = saved.flow;
       if (saved.lookupMode === 'wiki' || saved.lookupMode === 'native' || saved.lookupMode === 'both')
         out.lookupMode = saved.lookupMode;
+      if (saved.xray === 'off' || saved.xray === 'on') out.xray = saved.xray;
       return out;
     }
   } catch {

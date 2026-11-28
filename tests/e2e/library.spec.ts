@@ -37,7 +37,8 @@ test('books from older versions in other formats can be deleted, never opened', 
   await page.goto('/');
   await page.evaluate(async () => {
     const db = await new Promise<IDBDatabase>((res) => {
-      const r = indexedDB.open('owlreader', 1);
+      // the app may already have created (and upgraded) the database: open whatever version is there
+      const r = indexedDB.open('owlreader');
       r.onupgradeneeded = () => {
         r.result.createObjectStore('books', { keyPath: 'id' });
         r.result.createObjectStore('files', { keyPath: 'bookId' });

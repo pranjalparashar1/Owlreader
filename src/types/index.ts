@@ -13,6 +13,14 @@ export interface BookRecord {
   lastOpenedAt: number;
   coverDataUrl?: string; // Optional extracted cover thumbnail
   progress: ReadingProgress;
+  /**
+   * Hint appended to lookups that need disambiguating ("Nvidia"). Seeded from the PDF's subject
+   * or title on import; '' means the reader cleared it. Books imported before 1.6.1 have none
+   * and get a seed from their title when opened.
+   */
+  contextTag?: string;
+  /** X-Ray: the reader opted this book into whole-book indexing. */
+  xrayWholeBook?: boolean;
 }
 
 export interface ReadingProgress {
@@ -24,7 +32,12 @@ export interface ReadingProgress {
 export interface LookupCandidate {
   title: string;
   snippet: string; // Plain text (HTML tags stripped)
+  /** The section of `title` the search matched inside, if any. */
+  section?: string;
 }
+
+/** Text with the search's matched words marked: [text, isMatch][] (JSON-safe for IndexedDB). */
+export type MarkedText = Array<[string, boolean]>;
 
 export interface LookupResult {
   query: string;
@@ -38,8 +51,15 @@ export interface LookupResult {
     lat: number;
     lon: number;
   };
-  type: 'standard' | 'disambiguation' | 'not_found';
+  /**
+   * 'section': no article has this title, but it's covered inside a broader one. `title` is that
+   * article, `section` the matching heading and snippet; `pageUrl` links to the section.
+   */
+  type: 'standard' | 'disambiguation' | 'not_found' | 'section';
+  section?: { title: string; snippet: MarkedText };
   candidates?: LookupCandidate[];
+  /** The book context the lookup was made with (results from a search depend on it). */
+  context?: string;
   cachedAt: number;
 }
 
@@ -55,4 +75,31 @@ export interface ReaderLocation {
 /** Books saved by older versions in a format this version can't open (read straight from IndexedDB). */
 export function isSupportedBook(book: { format?: unknown }): boolean {
   return book.format === 'pdf';
+}
+
+/** X-Ray: what kind of thing a term names (from the NLP tagger, or 'term' from the heuristics). */
+export type EntityKind = 'person' | 'place' | 'org' | 'term';
+
+export interface PageEntity {
+  label: string;
+  kind: EntityKind;
+  count: number;
+}
+
+export interface BookEntity {
+  label: string;
+  kind: EntityKind;
+  pages: number[];
+  firstPage: number;
+  firstSentence: string;
+}
+
+/** Whole-book X-Ray index, built in idle chunks and checkpointed so it survives app closes. */
+export interface BookIndexRecord {
+  bookId: string;
+  /** Pages 1…indexedPages are done. */
+  indexedPages: number;
+  totalPages: number;
+  entities: Record<string, BookEntity>;
+  updatedAt: number;
 }

@@ -1,6 +1,7 @@
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { pdfjs, type PDFDocumentProxy } from '../lib/pdfjs';
 import { localFlag } from '../lib/settings';
+import { pageTextFromItems } from '../lib/terms';
 import type { ReaderTheme } from '../types';
 import { tapZone, type ReaderHandle, type ReaderProps } from './readerTypes';
 import { CloseIcon } from './icons';
@@ -574,16 +575,32 @@ const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref)
     [doc, theme],
   );
 
+  // ---- page text for X-Ray and lookup context. Background requests go through the idle queue,
+  // lowest priority, so they run only after visible pages and size probes, and never mid-scroll.
+  const getPageText = useCallback(
+    (n: number, opts: { idle?: boolean } = {}): Promise<string> => {
+      if (!doc || n < 1 || n > doc.numPages) return Promise.reject(new Error('No such page'));
+      const read = async () =>
+        pageTextFromItems((await (await doc.getPage(n)).getTextContent()).items as Array<{ str?: string }>);
+      if (!opts.idle) return read();
+      return new Promise((resolve, reject) => {
+        scheduler.requestIdle(`text${n}`, 20, () => read().then(resolve, reject));
+      });
+    },
+    [doc, scheduler],
+  );
+
   useImperativeHandle(
     ref,
     () => ({
       goToPage: (n) => goToPage(n),
       renderThumbnail,
+      getPageText,
       next,
       prev,
       zoom: (dir) => zoomAt(dir === 0 ? 1 : dir > 0 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP),
     }),
-    [goToPage, renderThumbnail, next, prev, zoom, zoomAt],
+    [goToPage, renderThumbnail, getPageText, next, prev, zoom, zoomAt],
   );
 
   // ---- keyboard

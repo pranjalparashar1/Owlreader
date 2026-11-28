@@ -1,5 +1,6 @@
-import type { LookupCandidate, LookupResult } from '../types';
+import type { LookupCandidate, LookupResult, MarkedText } from '../types';
 import { getCachedLookup, putCachedLookup } from '../db/libraryDb';
+import { withContext } from '../lib/terms';
 
 const REST = 'https://en.wikipedia.org/api/rest_v1/page/summary/';
 const ACTION = 'https://en.wikipedia.org/w/api.php';
@@ -142,20 +143,59 @@ async function fetchSummary(title: string): Promise<SummaryJson | null> {
   return data as SummaryJson;
 }
 
-async function searchCandidates(query: string, exclude?: string): Promise<LookupCandidate[]> {
+interface SearchHit {
+  title: string;
+  snippet: string;
+  sectiontitle?: string;
+}
+
+/** Search snippets mark matches with <span class="searchmatch">; keep those marks, drop other HTML. */
+export function markSnippet(html: string): MarkedText {
+  const out: MarkedText = [];
+  const re = /<span class="searchmatch">(.*?)<\/span>/g;
+  let last = 0;
+  for (const m of html.matchAll(re)) {
+    const before = stripHtml(html.slice(last, m.index));
+    if (before) out.push([before, false]);
+    out.push([stripHtml(m[1]), true]);
+    last = (m.index ?? 0) + m[0].length;
+  }
+  const rest = stripHtml(html.slice(last));
+  if (rest) out.push([rest, false]);
+  // stripHtml trims each piece: put the spaces between pieces back
+  return out.map(([t, b], i) => [i && !/^[,.;:!?)]/.test(t) ? ` ${t}` : t, b]);
+}
+
+async function searchHits(query: string): Promise<SearchHit[]> {
   const url =
-    `${ACTION}?action=query&list=search&srsearch=${encodeURIComponent(query)}` + `&srlimit=6&srprop=snippet&format=json&origin=*`;
+    `${ACTION}?action=query&list=search&srsearch=${encodeURIComponent(query)}` +
+    `&srlimit=6&srprop=${encodeURIComponent('snippet|sectiontitle')}&format=json&origin=*`;
   const { data } = await fetchJson(url);
-  const hits = (data as { query?: { search?: Array<{ title: string; snippet: string }> } })?.query?.search ?? [];
+  return (data as { query?: { search?: SearchHit[] } })?.query?.search ?? [];
+}
+
+function toCandidates(hits: SearchHit[], exclude?: string): LookupCandidate[] {
   return (
     hits
       .filter((h) => !/\(disambiguation\)$/i.test(h.title))
       // the disambiguation page itself often comes back as a hit ("Mercury" for "mercury");
       // tapping it would just show this same list again, which looks like the tap did nothing
       .filter((h) => !exclude || h.title.toLowerCase() !== exclude)
+      .filter((h, i, all) => all.findIndex((o) => o.title === h.title) === i)
       .slice(0, 4)
-      .map((h) => ({ title: h.title, snippet: stripHtml(h.snippet) }))
+      .map((h) => ({ title: h.title, snippet: stripHtml(h.snippet), ...(h.sectiontitle ? { section: h.sectiontitle } : {}) }))
   );
+}
+
+/** Link to a section of an article on mobile Wikipedia. */
+export function sectionUrl(title: string, section: string) {
+  const enc = (s: string) => encodeURIComponent(s.replace(/ /g, '_'));
+  return `https://en.m.wikipedia.org/wiki/${enc(title)}#${enc(section)}`;
+}
+
+/** Web search for when Wikipedia has nothing useful. */
+export function googleUrl(query: string) {
+  return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
 }
 
 function toStandard(query: string, d: SummaryJson): LookupResult {
@@ -172,37 +212,65 @@ function toStandard(query: string, d: SummaryJson): LookupResult {
   };
 }
 
+export interface LookupOptions {
+  /** Skip normalization; used when the user taps a candidate. */
+  exactTitle?: boolean;
+  /** Bypass the saved copy and overwrite it. */
+  refresh?: boolean;
+  /** The book's context hint ("Nvidia"), added to the search when there's no exact article. */
+  context?: string;
+}
+
 /**
- * Lookup pipeline: normalize → IndexedDB cache → REST summary →
- * (404 or disambiguation) MediaWiki search fallback with up to 4 candidates.
- * `exactTitle` skips normalization; used when the user taps a candidate.
+ * Lookup pipeline: normalize → IndexedDB cache → REST summary → (404 or disambiguation)
+ * MediaWiki search, boosted with the book's context when it has one, which gives either a
+ * matching section inside a broader article or up to 4 candidates.
+ *
+ * Exact articles are cached under the query alone (they don't depend on the book). Search-based
+ * results are cached per context, so the same word in two different books can resolve differently.
  */
-export async function lookup(raw: string, opts: { exactTitle?: boolean; refresh?: boolean } = {}): Promise<LookupResponse> {
+export async function lookup(raw: string, opts: LookupOptions = {}): Promise<LookupResponse> {
   const query = opts.exactTitle ? raw.trim() : normalizeQuery(raw);
   if (!query) throw new Error('Nothing to look up.');
   const key = query.toLowerCase();
+  const context = opts.exactTitle ? undefined : contextFor(query, opts.context);
+  const ctxKey = context ? `${key}|${context.toLowerCase()}` : key;
 
-  const cached = opts.refresh ? undefined : await getCachedLookup(key).catch(() => undefined);
-  if (cached && Date.now() - (cached.cachedAt ?? 0) > CACHE_TTL_MS) {
-    // stale: try for a fresh copy, but an old answer beats an error when offline or rate-limited
-    try {
-      return await fetchAndCache(query, key);
-    } catch (e) {
-      if (!(e instanceof OfflineError || e instanceof ServiceError)) throw e;
-    }
+  let cached: LookupResult | undefined;
+  if (!opts.refresh) {
+    const plain = await getCachedLookup(key).catch(() => undefined);
+    // a plain-key list or section result came from a context-free search: with a context, look again
+    cached = !context || plain?.type === 'standard' ? plain : await getCachedLookup(ctxKey).catch(() => undefined);
+    if (!cached && plain) cached = plain; // used only if fetching fails (offline)
   }
-  if (cached) {
-    // lists cached before 1.1.1 may still include the disambiguation page itself
-    if (cached.type === 'disambiguation' && cached.candidates) {
-      const self = cached.title.toLowerCase();
-      cached.candidates = cached.candidates.filter((c) => c.title.toLowerCase() !== self && c.title.toLowerCase() !== key);
-    }
-    return { result: cached, fromCache: true };
+  const usable = cached && (!context || cached.type === 'standard' || (cached.context ?? '') === context);
+  if (cached && usable && Date.now() - (cached.cachedAt ?? 0) <= CACHE_TTL_MS) return fromCache(cached, key);
+  try {
+    return await fetchAndCache(query, key, context, ctxKey);
+  } catch (e) {
+    // stale or context-less copy: an old answer beats an error when offline or rate-limited
+    if (cached && (e instanceof OfflineError || e instanceof ServiceError)) return fromCache(cached, key);
+    throw e;
   }
-  return fetchAndCache(query, key);
 }
 
-async function fetchAndCache(query: string, key: string): Promise<LookupResponse> {
+/** The context hint, unless it's empty or already part of the query. */
+function contextFor(query: string, context?: string) {
+  const c = context?.trim();
+  if (!c) return undefined;
+  return withContext(query, c) === query ? undefined : c;
+}
+
+function fromCache(cached: LookupResult, key: string): LookupResponse {
+  // lists cached before 1.1.1 may still include the disambiguation page itself
+  if (cached.type === 'disambiguation' && cached.candidates) {
+    const self = cached.title.toLowerCase();
+    cached.candidates = cached.candidates.filter((c) => c.title.toLowerCase() !== self && c.title.toLowerCase() !== key);
+  }
+  return { result: cached, fromCache: true };
+}
+
+async function fetchAndCache(query: string, key: string, context: string | undefined, ctxKey: string): Promise<LookupResponse> {
   const summary = await fetchSummary(query);
   if (summary && summary.type !== 'disambiguation') {
     const result = toStandard(query, summary);
@@ -211,12 +279,22 @@ async function fetchAndCache(query: string, key: string): Promise<LookupResponse
   }
 
   const isDisambig = summary?.type === 'disambiguation';
-  const candidates = await searchCandidates(query, isDisambig ? (summary?.title?.toLowerCase() ?? key) : undefined);
+  let hits = await searchHits(withContext(query, context));
+  // a context that matches nothing (an odd title) mustn't turn a findable word into "not found"
+  if (context && hits.length === 0) {
+    hits = await searchHits(query);
+  }
+  const candidates = toCandidates(hits, isDisambig ? (summary?.title?.toLowerCase() ?? key) : undefined);
+  const save = async (result: LookupResult) => {
+    await putCachedLookup(ctxKey, result).catch(() => {});
+    return { result, fromCache: false };
+  };
 
   // A lowercase or slightly-off query ("blenheim palace") 404s on the REST API but its top
   // search hit is an exact match: resolve it directly instead of showing a one-item list.
-  if (!summary && candidates[0] && candidates[0].title.toLowerCase() === key) {
-    const exact = await fetchSummary(candidates[0].title);
+  const top = hits[0];
+  if (!summary && top && top.title.toLowerCase() === key) {
+    const exact = await fetchSummary(top.title);
     if (exact && exact.type !== 'disambiguation') {
       const result = toStandard(query, exact);
       await putCachedLookup(key, result).catch(() => {});
@@ -224,24 +302,39 @@ async function fetchAndCache(query: string, key: string): Promise<LookupResponse
     }
   }
 
+  // No article by that name, but the best match is a section inside a broader one ("Bumpgate"
+  // inside the Nvidia article): show that section's heading and snippet, not the article's lead.
+  if (!summary && top?.sectiontitle && !/\(disambiguation\)$/i.test(top.title)) {
+    return save({
+      query,
+      title: top.title,
+      extract: '',
+      type: 'section',
+      section: { title: top.sectiontitle, snippet: markSnippet(top.snippet) },
+      pageUrl: sectionUrl(top.title, top.sectiontitle),
+      candidates: candidates.filter((c) => c.title !== top.title || c.section !== top.sectiontitle).slice(0, 3),
+      context,
+      cachedAt: Date.now(),
+    });
+  }
+
   if (candidates.length === 0) {
     return {
-      result: { query, title: query, extract: '', type: 'not_found', cachedAt: Date.now() },
+      result: { query, title: query, extract: '', type: 'not_found', context, cachedAt: Date.now() },
       fromCache: false,
     };
   }
 
-  const result: LookupResult = {
+  return save({
     query,
     title: summary?.title ?? query,
     description: summary?.description,
     extract: '',
     type: 'disambiguation',
     candidates,
+    context,
     cachedAt: Date.now(),
-  };
-  await putCachedLookup(key, result).catch(() => {});
-  return { result, fromCache: false };
+  });
 }
 
 export function osmEmbedUrl(lat: number, lon: number, span = 0.03) {

@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 export const ATLAS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'atlas.pdf');
 export const ATLAS_PAGES = 300;
+/** 12 pages of prose with names, coined terms, running headers and a paragraph across pages 5→6. */
+export const CHRONICLE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'chronicle.pdf');
 
 /** Mutable Wikipedia mock: tests flip `mode` / `version` between steps. */
 export interface WikiMock {
@@ -24,6 +26,9 @@ const ARTICLES: Record<string, { title: string; extract: string; coordinates?: {
   Blenheim: { title: 'Blenheim', extract: 'Blenheim is a village in Bavaria, Germany.', coordinates: { lat: 48.63, lon: 10.6 } },
   'Mercury (planet)': { title: 'Mercury (planet)', extract: 'Mercury is the first planet from the Sun.' },
   'Mercury (element)': { title: 'Mercury (element)', extract: 'Mercury is a chemical element.' },
+  'Santa Clara': { title: 'Santa Clara, California', extract: 'Santa Clara is a city in California.' },
+  Nvidia: { title: 'Nvidia', extract: 'Nvidia is an American technology company.' },
+  'Jensen Huang': { title: 'Jensen Huang', extract: 'Jensen Huang is a Taiwanese-American businessman.' },
 };
 
 /** Routes every Wikipedia/Wikimedia/OSM request: the test environment never hits the network. */
@@ -45,6 +50,19 @@ export async function mockWikipedia(page: Page): Promise<WikiMock> {
     }
     if (url.includes('list=search')) {
       const q = /srsearch=([^&]+)/.exec(url)?.[1] ?? '';
+      if (q.toLowerCase().startsWith('bumpgate'))
+        return json(route, {
+          query: {
+            search: [
+              {
+                title: 'Nvidia',
+                sectiontitle: 'Laptop GPU failures',
+                snippet: 'packaging defect known as <span class="searchmatch">Bumpgate</span> affected laptop chips',
+              },
+              { title: 'Dell', snippet: 'computer maker' },
+            ],
+          },
+        });
       const hits = q.toLowerCase().startsWith('mercury')
         ? [
             { title: 'Mercury (planet)', snippet: 'The smallest <b>planet</b>' },
@@ -152,4 +170,24 @@ export async function dragScrubber(page: Page, target: number, steps = 30) {
       await page.mouse.up();
     },
   };
+}
+
+export async function importChronicle(page: Page) {
+  await page.goto('/');
+  await page.locator('input[type=file]').first().setInputFiles(CHRONICLE);
+  await expect(page.getByRole('button', { name: 'Open The Chip Chronicle' })).toBeVisible();
+}
+
+export async function openChronicle(page: Page) {
+  await page.getByRole('button', { name: 'Open The Chip Chronicle' }).click();
+  await expect(page.locator('.textLayer span').first()).toBeAttached();
+}
+
+/** Jumps with the scrubber, as a reader would. */
+export async function goToPage(page: Page, n: number) {
+  await showChrome(page);
+  await page.locator('input.scrubber').fill(String(n));
+  await page.locator('input.scrubber').dispatchEvent('pointerup');
+  await expect.poll(() => currentPage(page)).toBe(n);
+  await expect(page.locator(`.pdf-page[data-page="${n}"] .textLayer span`).first()).toBeAttached();
 }
