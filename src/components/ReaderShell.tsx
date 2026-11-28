@@ -1,8 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import type { BookIndexRecord, BookRecord, ReaderLocation, ReadingProgress } from '../types';
+import type { BookIndexRecord, BookRecord, ClipRange, ClipRecord, ReaderLocation, ReadingProgress } from '../types';
 import { getBookFile, getBookIndex, touchBook, updateBook, updateProgress } from '../db/libraryDb';
 import { nearbyTerms, seedContextTag } from '../lib/terms';
 import { findEntity } from '../features/xray/find';
+import { comparePoints, pointAt } from '../features/excerpt/points';
 import { clearTextSelection, restoreSelectionRange, saveSelectionRange, useTextSelection } from '../hooks/useTextSelection';
 import { useOrientation } from '../hooks/useOrientation';
 import type { Settings } from '../lib/settings';
@@ -11,7 +12,7 @@ import LookupDrawer, { type LookupRequest } from './LookupDrawer';
 import ReaderSettings, { type XrayState } from './ReaderSettings';
 import { ErrorScreen } from './ErrorBoundary';
 import type { ReaderHandle } from './readerTypes';
-import { BackIcon, CloseIcon, FitWidthIcon, ReturnIcon, XrayIcon } from './icons';
+import { BackIcon, CloseIcon, FitWidthIcon, ReturnIcon, ScissorsIcon, XrayIcon } from './icons';
 
 interface Props {
   book: BookRecord;
@@ -26,6 +27,10 @@ const CARD_W = 132; // preview card width in CSS px
 
 // PDF.js is ~450 kB: keep it out of the library screen's first load.
 const PdfReader = lazy(() => import('./PdfReader'));
+// Clip & Export (1.7) loads only when used: none of it is parsed during normal reading.
+const ClipOverlay = lazy(() => import('../features/excerpt/ClipOverlay'));
+const ExportSheet = lazy(() => import('../features/excerpt/ExportSheet'));
+const ClipsSheet = lazy(() => import('../features/excerpt/ClipsSheet'));
 
 export default function ReaderShell({ book, settings, onSettings, onBack }: Props) {
   const [file, setFile] = useState<{ data: ArrayBuffer; name: string } | null>(null);
@@ -44,6 +49,10 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   const [bookIndex, setBookIndex] = useState<BookIndexRecord | null>(null);
   const [returnTo, setReturnTo] = useState<number | null>(null);
   const [xrayBusy, setXrayBusy] = useState(false);
+  /** Clip Mode: null = reading; otherwise the range to start from (null = what's on screen). */
+  const [clip, setClip] = useState<{ initial: ClipRange | null } | null>(null);
+  const [exportRange, setExportRange] = useState<ClipRange | null>(null);
+  const [clipsOpen, setClipsOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -89,6 +98,37 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   }, [flush]);
 
   const onLocation = useCallback((loc: ReaderLocation) => setLocation(loc), []);
+
+  // ---- Clip Mode. Clipping runs in the vertical Scroll layout (so a passage can run across a
+  // page break) without changing the saved Pages/Scroll setting.
+  const enterClip = (fromSelection: boolean) => {
+    let initial: ClipRange | null = null;
+    if (fromSelection) {
+      const sel = document.getSelection();
+      const rects = sel && sel.rangeCount ? [...sel.getRangeAt(0).getClientRects()].filter((r) => r.height > 0) : [];
+      if (rects.length) {
+        const first = rects[0];
+        const last = rects[rects.length - 1];
+        const a = pointAt(first.top, first.left + first.width / 2);
+        const b = pointAt(last.bottom, last.left + last.width / 2);
+        if (a && b && comparePoints(a, b) <= 0) initial = { start: a, end: b };
+      }
+      clearTextSelection();
+    }
+    setSettingsOpen(false);
+    setChrome(false);
+    setClip({ initial });
+  };
+  const saveClipRange = async (range: ClipRange) => {
+    const doc = readerRef.current?.getDocument();
+    if (!doc) return;
+    const { saveClip } = await import('../features/excerpt/save');
+    await saveClip(doc, book.id, range);
+  };
+  const goToClip = (c: ClipRecord) => {
+    setClipsOpen(false);
+    readerRef.current?.goToPage(c.startPage, Math.max(0, c.startY - 0.05));
+  };
   const locationRef = useRef(location);
   locationRef.current = location;
 
@@ -264,6 +304,7 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   };
   useEffect(() => () => window.clearTimeout(thumbTimer.current), []);
 
+  const chromeShown = chrome && !clip; // Clip Mode has its own toolbar
   const barBase = 'fixed inset-x-0 z-30 border-line bg-chrome will-change-transform';
 
   return (
@@ -273,7 +314,9 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
       style={{ background: 'var(--reader-bg)' }}
     >
       <div className="absolute inset-0">
-        <Suspense fallback={null}>{readerProps && <PdfReader ref={readerRef} {...readerProps} flow={settings.flow} />}</Suspense>
+        <Suspense fallback={null}>
+          {readerProps && <PdfReader ref={readerRef} {...readerProps} flow={clip ? 'scrolled' : settings.flow} />}
+        </Suspense>
       </div>
 
       {error && (
@@ -289,11 +332,11 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
       <header
         className={`${barBase} pt-safe-bar top-0 border-b`}
         style={{
-          transform: chrome ? 'none' : 'translateY(-110%)',
-          visibility: chrome ? 'visible' : 'hidden',
-          transition: barTransition(chrome),
+          transform: chromeShown ? 'none' : 'translateY(-110%)',
+          visibility: chromeShown ? 'visible' : 'hidden',
+          transition: barTransition(chromeShown),
         }}
-        aria-hidden={!chrome}
+        aria-hidden={!chromeShown}
       >
         <div className="px-safe flex h-12 items-center gap-2">
           <button
@@ -304,6 +347,15 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
             <BackIcon size={22} /> <span className="hidden sm:inline">Library</span>
           </button>
           <div className="min-w-0 flex-1 truncate text-center font-serif text-[15px] font-semibold">{book.title}</div>
+          <button
+            onClick={() => enterClip(false)}
+            disabled={!location}
+            aria-label="Clip passage"
+            title="Clip"
+            className="flex h-9 w-9 items-center justify-center rounded-full active:bg-surface-2 disabled:opacity-60"
+          >
+            <ScissorsIcon size={19} />
+          </button>
           {xrayOn && (
             <button
               onClick={openXray}
@@ -333,11 +385,11 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
       <footer
         className={`${barBase} pb-safe bottom-0 border-t`}
         style={{
-          transform: chrome ? 'none' : 'translateY(110%)',
-          visibility: chrome ? 'visible' : 'hidden',
-          transition: barTransition(chrome),
+          transform: chromeShown ? 'none' : 'translateY(110%)',
+          visibility: chromeShown ? 'visible' : 'hidden',
+          transition: barTransition(chromeShown),
         }}
-        aria-hidden={!chrome}
+        aria-hidden={!chromeShown}
       >
         <div className="px-safe pt-2 pb-2">
           <div className="relative flex items-center gap-3">
@@ -410,8 +462,14 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
         </div>
       )}
 
-      {mode !== 'native' && selection.text && !lookupReq && (
-        <LookupPill text={selection.text} orientation={orientation} lift={chrome ? 76 : 0} onLookup={openLookup} />
+      {mode !== 'native' && selection.text && !lookupReq && !clip && (
+        <LookupPill
+          text={selection.text}
+          orientation={orientation}
+          lift={chrome ? 76 : 0}
+          onLookup={openLookup}
+          onClip={() => enterClip(true)}
+        />
       )}
       <ReaderSettings
         open={settingsOpen}
@@ -425,7 +483,42 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
         xray={xrayState}
         onXray={onXray}
         indexProgress={wholeBook && bookIndex ? { indexed: bookIndex.indexedPages, total: bookIndex.totalPages } : null}
+        onClips={() => {
+          setSettingsOpen(false);
+          setClipsOpen(true);
+        }}
       />
+      <Suspense fallback={null}>
+        {clip && (
+          <ClipOverlay
+            reader={readerRef}
+            initial={clip.initial}
+            onCancel={() => setClip(null)}
+            onSave={saveClipRange}
+            onExport={setExportRange}
+          />
+        )}
+        {clipsOpen && (
+          <ClipsSheet
+            bookId={book.id}
+            onClose={() => setClipsOpen(false)}
+            onGo={goToClip}
+            onExport={(r) => {
+              setClipsOpen(false);
+              setExportRange(r);
+            }}
+          />
+        )}
+        {exportRange && readerRef.current?.getDocument() && (
+          <ExportSheet
+            book={book}
+            range={exportRange}
+            doc={readerRef.current.getDocument()!}
+            theme={settings.theme}
+            onClose={() => setExportRange(null)}
+          />
+        )}
+      </Suspense>
       <LookupDrawer
         request={lookupReq}
         orientation={orientation}

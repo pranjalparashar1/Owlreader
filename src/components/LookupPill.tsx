@@ -1,5 +1,5 @@
 import type { Orientation } from '../types';
-import { SearchIcon } from './icons';
+import { ScissorsIcon, SearchIcon } from './icons';
 
 interface Props {
   text: string;
@@ -7,6 +7,8 @@ interface Props {
   /** Extra bottom offset (px) while the reader's bottom bar is showing. */
   lift?: number;
   onLookup: (text: string) => void;
+  /** "Clip passage": start Clip Mode from the selection. */
+  onClip?: () => void;
 }
 
 const MAX = 28;
@@ -22,14 +24,14 @@ export function truncateLabel(text: string) {
  * bottom-right in landscape) so it never collides with iOS's native selection callout,
  * which always sits right next to the selected words.
  */
-export default function LookupPill({ text, orientation, lift = 0, onLookup }: Props) {
+export default function LookupPill({ text, orientation, lift = 0, onLookup, onClip }: Props) {
   const position =
     orientation === 'portrait'
       ? { left: '50%', transform: 'translateX(-50%)', bottom: `calc(${24 + lift}px + env(safe-area-inset-bottom))` }
       : { right: 'calc(20px + env(safe-area-inset-right))', bottom: `calc(${20 + lift}px + env(safe-area-inset-bottom))` };
 
   return (
-    <div className="fixed z-40 transition-[bottom] duration-200" style={position}>
+    <div className="fixed z-40 flex items-center gap-2 transition-[bottom] duration-200" style={position}>
       <button
         key={text}
         type="button"
@@ -51,6 +53,26 @@ export default function LookupPill({ text, orientation, lift = 0, onLookup }: Pr
         <SearchIcon size={18} strokeWidth={2.2} className="shrink-0 text-accent" />
         <span className="truncate">Look up “{truncateLabel(text)}”</span>
       </button>
+      {onClip && (
+        <button
+          type="button"
+          className="no-callout animate-pill-in flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-fg text-bg shadow-[0_8px_28px_-6px_rgb(0_0_0/0.45)] ring-1 ring-white/10"
+          // same pointerdown trick: the selection must still exist when Clip Mode reads it
+          onPointerDown={(e) => {
+            e.preventDefault();
+            onClip();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onClip();
+            }
+          }}
+          aria-label="Clip from selection"
+        >
+          <ScissorsIcon size={19} className="text-accent" />
+        </button>
+      )}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 {
   "name": "owlreader",
   "private": true,
-  "version": "1.6.1",
+  "version": "1.7.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -16,6 +16,7 @@
   "dependencies": {
     "compromise": "14.19.0",
     "idb": "^8.0.4",
+    "pdf-lib": "1.17.1",
     "pdfjs-dist": "^5.4.624",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
