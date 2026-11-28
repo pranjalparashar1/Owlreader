@@ -35,7 +35,7 @@ type View =
 
 type RunOpts = { exactTitle?: boolean; push?: boolean; retry?: boolean; refresh?: boolean; term?: string };
 
-const ANIM_MS = 260;
+const ANIM_MS = 380;
 const SWIPE_CLOSE_PX = 90;
 const FLICK_MS = 160; // how far a release "throws" the sheet, in ms of current velocity
 
@@ -294,7 +294,7 @@ export default function LookupDrawer({ request, orientation, onClose, contextTag
         style={{
           ...sheetStyle,
           transform,
-          transition: `transform ${ANIM_MS}ms cubic-bezier(0.2, 0.8, 0.2, 1)`,
+          transition: `transform ${ANIM_MS}ms var(--ease-ios)`,
           willChange: 'transform',
         }}
       >
@@ -490,7 +490,6 @@ function XrayList({
           })}
         </ul>
       )}
-      <p className="mt-4 px-1 text-[12px] text-muted">Found on this device from the page's text. Tap one to look it up.</p>
     </div>
   );
 }

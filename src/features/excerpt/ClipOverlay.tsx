@@ -33,7 +33,6 @@ export default function ClipOverlay({ reader, initial, onCancel, onExport, onSav
   const drag = useRef<{ which: 'start' | 'end'; y: number; downY: number } | null>(null);
   /** The opening on-screen guess is replaced by the first tapped paragraph rather than stretched. */
   const provisional = useRef(!initial);
-  const [taps, setTaps] = useState(0);
 
   const scroller = () => document.querySelector<HTMLElement>('.pdf-scroller');
 
@@ -140,7 +139,6 @@ export default function ClipOverlay({ reader, initial, onCancel, onExport, onSav
       }
       provisional.current = false;
       setRange(next);
-      setTaps((n) => n + 1);
     };
     window.addEventListener('click', onClick, { passive: true });
     return () => window.removeEventListener('click', onClick);
@@ -203,7 +201,6 @@ export default function ClipOverlay({ reader, initial, onCancel, onExport, onSav
     cancelAnimationFrame(autoScroll.current);
     const r = rangeRef.current;
     if (!d || !r) return;
-    setTaps((n) => n + 1);
     const snapped = await snap(d.which === 'start' ? r.start : r.end, d.which);
     setRange((cur) => (cur ? (d.which === 'start' ? { ...cur, start: snapped } : { ...cur, end: snapped }) : cur));
   };
@@ -266,9 +263,6 @@ export default function ClipOverlay({ reader, initial, onCancel, onExport, onSav
           <div className="min-w-0 flex-1 text-center">
             <div className="text-[15px] font-semibold tabular-nums" data-testid="clip-span">
               {range ? spanLabel(range) : '…'}
-            </div>
-            <div className="text-[11px] text-muted" data-testid="clip-hint">
-              {taps === 0 && !initial ? 'Tap a paragraph to start' : `Tap to extend · drag to fine-tune`}
             </div>
           </div>
           <button

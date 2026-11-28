@@ -65,7 +65,6 @@ function Candidates({
 }) {
   return (
     <div className="px-4 pt-3 pb-5">
-      <p className="px-1 text-[13px] text-muted">“{result.query}” could mean several things. Pick one:</p>
       <ul className="mt-3 space-y-2">
         {result.candidates?.map((c) => (
           <li key={c.title}>

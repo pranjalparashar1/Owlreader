@@ -2,7 +2,8 @@
 with named people, places, organisations and coined terms ("Bumpgate", "CUDA"), a running header
 and page numbers (for the stitcher's void removal), headings in bold, a numbered list, and a
 paragraph that runs from the bottom of page 5 onto page 6 with a hyphenated line break, and a
-binding-gutter rule down the inner edge of page 8 (export must keep the margins even around the text).
+binding-gutter rule down the inner edge of page 8 (export must keep the margins even around the text),
+and an outline with one entry per chapter heading.
 Usage: python3 tests/e2e/fixtures/make-chronicle.py  (needs reportlab)"""
 from pathlib import Path
 from reportlab.lib.pagesizes import A5
@@ -73,6 +74,9 @@ for n in range(1, 13):
     y = TOP
     for kind, body in PAGES[n]:
         if kind == 'h':
+            key = f'ch{n}'
+            c.bookmarkPage(key)
+            c.addOutlineEntry(body, key, level=0)  # the chapters menu (1.8.2)
             y -= 6
             c.setFont('Times-Bold', 16)
             c.drawString(LEFT, y, body)

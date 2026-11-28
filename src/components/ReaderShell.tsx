@@ -1,18 +1,22 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import type { BookIndexRecord, BookRecord, ClipRange, ClipRecord, ReaderLocation, ReadingProgress } from '../types';
+import { flushSync } from 'react-dom';
+import type { BookIndexRecord, BookRecord, ClipRange, ClipRecord, ReaderLocation, ReaderTheme, ReadingProgress } from '../types';
 import { getBookFile, getBookIndex, touchBook, updateBook, updateProgress } from '../db/libraryDb';
 import { nearbyTerms, seedContextTag } from '../lib/terms';
 import { findEntity } from '../features/xray/find';
 import { comparePoints, pointAt } from '../features/excerpt/points';
 import { clearTextSelection, restoreSelectionRange, saveSelectionRange, useTextSelection } from '../hooks/useTextSelection';
 import { useOrientation } from '../hooks/useOrientation';
+import { usePageSelect } from '../hooks/usePageSelect';
+import { prefersReducedMotion } from '../hooks/useFocusTrap';
 import type { Settings } from '../lib/settings';
 import LookupPill from './LookupPill';
 import LookupDrawer, { type LookupRequest } from './LookupDrawer';
 import ReaderSettings, { type XrayState } from './ReaderSettings';
+import ChapterMenu from './ChapterMenu';
 import { ErrorScreen } from './ErrorBoundary';
-import type { ReaderHandle } from './readerTypes';
-import { BackIcon, CloseIcon, FitWidthIcon, ReturnIcon, ScissorsIcon, XrayIcon } from './icons';
+import type { OutlineItem, ReaderHandle } from './readerTypes';
+import { BackIcon, ChevronDown, CloseIcon, FitWidthIcon, GearIcon, ReturnIcon, ScissorsIcon, XrayIcon } from './icons';
 
 interface Props {
   book: BookRecord;
@@ -43,7 +47,13 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   const readerRef = useRef<ReaderHandle>(null);
   const orientation = useOrientation();
   const selection = useTextSelection();
-  const [contextTag, setContextTag] = useState(() => book.contextTag ?? seedContextTag(book.title));
+  // seeded from the PDF's subject or title at import; offered as a chip in the lookup drawer
+  const contextTag = book.contextTag ?? seedContextTag(book.title);
+  const pageSelect = usePageSelect(selection.block);
+  const [outline, setOutline] = useState<OutlineItem[]>([]);
+  const [chaptersOpen, setChaptersOpen] = useState(false);
+  /** The theme being drawn ahead of a switch: the swatch moves at once, the screen when ready. */
+  const [pendingTheme, setPendingTheme] = useState<ReaderTheme | null>(null);
   const [pageTerms, setPageTerms] = useState<string[]>([]);
   const [wholeBook, setWholeBook] = useState(!!book.xrayWholeBook);
   const [bookIndex, setBookIndex] = useState<BookIndexRecord | null>(null);
@@ -121,7 +131,7 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   };
   /** One tap from a text selection: the Export sheet, with the selected lines already clipped. */
   const clipSelection = async () => {
-    const raw = selectionRange();
+    const raw = selection.block ? pageSelect.current : selectionRange();
     clearTextSelection();
     const doc = readerRef.current?.getDocument();
     if (!raw || !doc) return enterClip(raw);
@@ -142,14 +152,37 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   const locationRef = useRef(location);
   locationRef.current = location;
 
-  // ---- book context: saved shortly after the reader stops typing
-  const ctxTimer = useRef<number | undefined>(undefined);
-  const onContextTag = (tag: string) => {
-    setContextTag(tag);
-    window.clearTimeout(ctxTimer.current);
-    ctxTimer.current = window.setTimeout(() => updateBook(book.id, { contextTag: tag.trim() }).catch(() => {}), 400);
+  // ---- theme: draw the visible pages in the new theme first, then switch everything in one
+  // commit inside a View Transition, so iOS crossfades two finished frames on the GPU.
+  const themeSeq = useRef(0);
+  const onTheme = async (theme: ReaderTheme) => {
+    if (theme === settings.theme && !pendingTheme) return;
+    const seq = ++themeSeq.current;
+    setPendingTheme(theme);
+    await readerRef.current?.prepareTheme(theme).catch(() => {});
+    if (seq !== themeSeq.current) return; // tapped another swatch meanwhile
+    const apply = () =>
+      flushSync(() => {
+        setPendingTheme(null);
+        onSettings({ theme });
+      });
+    if (document.startViewTransition && !prefersReducedMotion()) document.startViewTransition(apply);
+    else apply();
   };
-  useEffect(() => () => window.clearTimeout(ctxTimer.current), []);
+
+  // ---- chapters for the title menu, once the PDF is open
+  const docReady = !!location;
+  useEffect(() => {
+    if (!docReady) return;
+    let alive = true;
+    readerRef.current
+      ?.getOutline()
+      .then((o) => alive && setOutline(o))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [docReady]);
 
   // ---- X-Ray. Off = nothing below runs. Whole book = index in idle chunks (lazily loaded).
   const xrayOn = settings.xray === 'on';
@@ -224,10 +257,14 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
   };
   const clipOpen = useRef(false);
   clipOpen.current = !!clip;
+  const blockRef = useRef(false);
+  blockRef.current = selection.block;
   const onCenterTap = useCallback(() => {
     if (clipOpen.current) return; // in Clip Mode a tap picks a paragraph
+    if (blockRef.current) return clearTextSelection(); // a tap puts the page highlight away
     setChrome((c) => !c);
     setSettingsOpen(false);
+    setChaptersOpen(false);
   }, []);
   const onPageTurn = useCallback(() => setChrome(false), []);
 
@@ -351,46 +388,71 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
         }}
         aria-hidden={!chromeShown}
       >
-        <div className="px-safe flex h-12 items-center gap-2">
+        <div className="px-safe relative flex h-12 items-center justify-between">
           <button
             onClick={onBack}
-            className="-ml-2 flex items-center gap-0.5 rounded-full py-2 pr-3 pl-1 text-[15px] active:bg-surface-2"
+            className="-ml-2 flex h-11 w-11 items-center justify-center rounded-full text-accent active:opacity-50"
             aria-label="Back to Library"
           >
-            <BackIcon size={22} /> <span className="hidden sm:inline">Library</span>
+            <BackIcon size={24} />
           </button>
-          <div className="min-w-0 flex-1 truncate text-center font-serif text-[15px] font-semibold">{book.title}</div>
-          <button
-            onClick={() => enterClip(null)}
-            disabled={!location}
-            aria-label="Clip passage"
-            title="Clip"
-            className="flex h-9 w-9 items-center justify-center rounded-full active:bg-surface-2 disabled:opacity-60"
-          >
-            <ScissorsIcon size={19} />
-          </button>
-          {xrayOn && (
+          {outline.length ? (
             <button
-              onClick={openXray}
-              disabled={xrayBusy || !location}
-              aria-label="X-Ray this page"
-              title="X-Ray"
-              className="flex h-9 items-center gap-1 rounded-full px-2.5 text-[13px] font-semibold active:bg-surface-2 disabled:opacity-60"
+              onClick={() => setChaptersOpen((o) => !o)}
+              aria-haspopup="menu"
+              aria-expanded={chaptersOpen}
+              aria-label={`${book.title}. Chapters`}
+              className="absolute left-1/2 flex min-w-0 -translate-x-1/2 items-center gap-1 rounded-full px-2 py-1.5 active:opacity-50"
+              style={{ maxWidth: TITLE_MAX }}
             >
-              <XrayIcon size={19} />
-              <span className="hidden sm:inline">X-Ray</span>
+              <span className="min-w-0 truncate font-serif text-[16px] font-semibold">{book.title}</span>
+              <ChevronDown
+                size={13}
+                className="shrink-0 text-muted"
+                style={{ transform: chaptersOpen ? 'rotate(180deg)' : 'none', transition: 'transform 300ms var(--ease-ios)' }}
+              />
             </button>
+          ) : (
+            <div
+              className="absolute left-1/2 min-w-0 -translate-x-1/2 truncate px-2 font-serif text-[16px] font-semibold"
+              style={{ maxWidth: TITLE_MAX }}
+            >
+              {book.title}
+            </div>
           )}
-          <button
-            onClick={() => setSettingsOpen((o) => !o)}
-            aria-label="Reading settings"
-            aria-expanded={settingsOpen}
-            className={`flex h-9 items-center gap-1 rounded-full px-3 font-serif text-[17px] font-semibold ${
-              settingsOpen ? 'bg-surface-2' : 'active:bg-surface-2'
-            }`}
-          >
-            <span className="text-[13px]">A</span>A
-          </button>
+          <div className="-mr-2 flex items-center">
+            <button
+              onClick={() => enterClip(null)}
+              disabled={!location}
+              aria-label="Clip passage"
+              title="Clip"
+              className="flex h-11 w-9 items-center justify-center rounded-full text-accent active:opacity-50 disabled:opacity-40"
+            >
+              <ScissorsIcon size={21} />
+            </button>
+            {xrayOn && (
+              <button
+                onClick={openXray}
+                disabled={xrayBusy || !location}
+                aria-label="X-Ray this page"
+                title="X-Ray"
+                className="flex h-11 w-9 items-center justify-center rounded-full text-accent active:opacity-50 disabled:opacity-40"
+              >
+                <XrayIcon size={21} />
+              </button>
+            )}
+            <button
+              onClick={() => setSettingsOpen((o) => !o)}
+              aria-label="Reading settings"
+              aria-expanded={settingsOpen}
+              className="flex h-11 w-9 items-center justify-center rounded-full text-accent active:opacity-50"
+            >
+              <GearIcon
+                size={22}
+                style={{ transform: settingsOpen ? 'rotate(60deg)' : 'none', transition: 'transform 500ms var(--spring)' }}
+              />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -442,7 +504,7 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
           </div>
           <div className="mt-1 flex items-center justify-between gap-2">
             <div className="min-w-0 flex-1 truncate text-[12px] text-muted">{scrubLabel}</div>
-            <ToolButton label="Fit width" onClick={() => readerRef.current?.zoom(0)}>
+            <ToolButton label="Fit text" onClick={() => readerRef.current?.zoom(0)}>
               <FitWidthIcon size={18} />
             </ToolButton>
             <div className="flex items-center gap-1">
@@ -459,15 +521,20 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
 
       {returnTo !== null && !lookupReq && (
         <div
-          className="fixed z-40 flex items-center rounded-full bg-fg text-bg shadow-[0_8px_28px_-6px_rgb(0_0_0/0.45)] transition-[top] duration-200"
+          className="fixed z-40 flex items-center rounded-full bg-fg text-bg shadow-[0_8px_28px_-6px_rgb(0_0_0/0.45)]"
           style={{
             left: '50%',
-            transform: 'translateX(-50%)',
-            top: `calc(${chrome ? 64 : 14}px + env(safe-area-inset-top) * 1.25)`,
+            top: 'calc(14px + env(safe-area-inset-top) * 1.25)',
+            transform: `translateX(-50%) translateY(${chrome ? 50 : 0}px)`,
+            transition: 'transform 420ms var(--ease-ios)',
           }}
         >
-          <button onClick={goBack} className="flex items-center gap-1.5 py-2 pr-2 pl-3.5 text-[14px] font-medium">
-            <ReturnIcon size={16} className="text-accent" /> Return to p. {returnTo}
+          <button
+            onClick={goBack}
+            aria-label={`Return to p. ${returnTo}`}
+            className="flex items-center gap-1.5 py-2 pr-2 pl-3.5 text-[14px] font-medium"
+          >
+            <ReturnIcon size={16} className="text-accent" /> p. {returnTo}
           </button>
           <button onClick={() => setReturnTo(null)} className="py-2 pr-3 pl-1 opacity-70" aria-label="Dismiss return">
             <CloseIcon size={15} />
@@ -489,10 +556,10 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
         settings={settings}
         zoom={location?.zoom ?? 1}
         onSettings={onSettings}
+        onTheme={onTheme}
+        pendingTheme={pendingTheme}
         onZoom={(dir) => readerRef.current?.zoom(dir)}
         onClose={() => setSettingsOpen(false)}
-        contextTag={contextTag}
-        onContextTag={onContextTag}
         xray={xrayState}
         onXray={onXray}
         indexProgress={wholeBook && bookIndex ? { indexed: bookIndex.indexedPages, total: bookIndex.totalPages } : null}
@@ -501,6 +568,17 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
           setClipsOpen(true);
         }}
       />
+      {chaptersOpen && outline.length > 0 && (
+        <ChapterMenu
+          items={outline}
+          page={location?.page ?? 1}
+          onClose={() => setChaptersOpen(false)}
+          onPick={(n) => {
+            setChaptersOpen(false);
+            readerRef.current?.goToPage(n);
+          }}
+        />
+      )}
       <Suspense fallback={null}>
         {clip && (
           <ClipOverlay
@@ -554,8 +632,11 @@ export default function ReaderShell({ book, settings, onSettings, onBack }: Prop
 
 // Slide on the compositor; flip visibility only after sliding out so a hidden bar
 // isn't composited on every frame of scrolling underneath it.
+/** Centred on the screen like an iOS navigation title, clear of the buttons on either side. */
+const TITLE_MAX = 'calc(100vw - 2 * (max(16px, env(safe-area-inset-right)) + 104px))';
+
 const barTransition = (shown: boolean) =>
-  shown ? 'transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s' : 'transform 200ms ease-in, visibility 0s linear 200ms';
+  shown ? 'transform 380ms var(--ease-ios), visibility 0s' : 'transform 260ms var(--ease-ios), visibility 0s linear 260ms';
 
 function ToolButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
   return (

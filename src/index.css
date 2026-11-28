@@ -358,7 +358,7 @@ button {
 @keyframes pill-in {
   from {
     opacity: 0;
-    transform: translateY(12px) scale(0.96);
+    transform: translateY(14px) scale(0.9);
   }
   to {
     opacity: 1;
@@ -366,7 +366,7 @@ button {
   }
 }
 .animate-pill-in {
-  animation: pill-in 160ms ease-out;
+  animation: pill-in var(--spring-ms) var(--spring) both;
 }
 @keyframes shimmer {
   0% {
@@ -471,4 +471,141 @@ button {
 }
 .clip-handle[data-off='below'] .clip-tag {
   top: -50px;
+}
+
+/* ---- Motion (1.8.2). iOS-like curves; only transform and opacity animate, so every
+   animation runs on the compositor. */
+:root {
+  /* a 500ms spring with ~1.5% overshoot, the feel of UIKit's default spring */
+  --spring: linear(
+    0,
+    0.0411,
+    0.1388,
+    0.2635,
+    0.3951,
+    0.5209,
+    0.6337,
+    0.73,
+    0.8089,
+    0.8714,
+    0.9191,
+    0.9542,
+    0.979,
+    0.9956,
+    1.0061,
+    1.012,
+    1.0146,
+    1.0151,
+    1.0143,
+    1.0127,
+    1.0108,
+    1.0088,
+    1.0069,
+    1.0052,
+    1
+  );
+  --spring-ms: 500ms;
+  /* UIKit's sheet / navigation curve */
+  --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.settings-panel {
+  transform-origin: calc(100% - 28px) 0;
+  transform: scale(0.86) translateY(-8px);
+  opacity: 0;
+  transition:
+    transform 200ms var(--ease-ios),
+    opacity 160ms ease-out;
+}
+.settings-panel[data-open='true'] {
+  transform: none;
+  opacity: 1;
+  transition:
+    transform var(--spring-ms) var(--spring),
+    opacity 180ms ease-out;
+}
+
+/* Segmented controls and swatches: an iOS press (slight shrink), no colour transitions,
+   which made theme changes repaint every control for 150ms. */
+.seg-press {
+  transition: transform 160ms var(--ease-ios);
+}
+.seg-press:active {
+  transform: scale(0.95);
+}
+
+/* Theme change: one GPU crossfade of the whole screen (View Transitions), instead of every
+   surface and page repainting on its own schedule. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 320ms;
+  animation-timing-function: var(--ease-ios);
+}
+
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-sheet-up {
+  animation: sheet-up 420ms var(--ease-ios) both;
+}
+.animate-fade-in {
+  animation: fade-in 240ms ease-out both;
+}
+.animate-pop-in {
+  animation: pop-in var(--spring-ms) var(--spring) both;
+}
+
+/* Title menu (chapters) */
+.chapter-menu {
+  transform-origin: 50% 0;
+  animation: pop-in 420ms var(--spring) both;
+}
+
+/* Page select (1.8.2): a long-press that grabs a whole page becomes Owl's own highlight, so
+   iOS's blue wash and its Copy | Look Up bar don't cover the page. */
+.page-select {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  animation: fade-in 180ms ease-out both;
+}
+.page-select > div {
+  position: absolute;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+:root[data-theme='dark'] .page-select > div,
+:root[data-theme='black'] .page-select > div {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* Fit text (1.8.2): the page margins sit off screen. They're clipped, not scrollable, so a
+   sideways swipe always turns the page instead of panning to a margin first. */
+.fit-text .pdf-slot.is-live,
+.pdf-scrolled.fit-text {
+  overflow-x: hidden;
 }

@@ -6,7 +6,7 @@ export interface ReaderHandle {
   goToPage(page: number, frac?: number): void;
   next(): void;
   prev(): void;
-  zoom(dir: 1 | -1 | 0): void; // 0 = fit width
+  zoom(dir: 1 | -1 | 0): void; // 0 = fit the text column to the screen
   /** Tiny render of a page for the scrubber preview; null if superseded or failed. */
   renderThumbnail(page: number, widthPx: number): Promise<HTMLCanvasElement | null>;
   /**
@@ -16,6 +16,18 @@ export interface ReaderHandle {
   getPageText(page: number, opts?: { idle?: boolean }): Promise<string>;
   /** The open pdf.js document, for on-demand tools (Clip & Export). */
   getDocument(): PDFDocumentProxy | null;
+  /** The PDF's chapters (its outline), flattened; [] when it has none. */
+  getOutline(): Promise<OutlineItem[]>;
+  /** Draws the visible pages in `theme` ahead of a theme change, so it can swap in at once. */
+  prepareTheme(theme: ReaderTheme): Promise<void>;
+}
+
+export interface OutlineItem {
+  title: string;
+  /** 1-indexed */
+  page: number;
+  /** 0 = chapter, 1 = section */
+  depth: number;
 }
 
 export interface ReaderProps {

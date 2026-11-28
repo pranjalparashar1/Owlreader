@@ -7,20 +7,16 @@ import { ChevronRight, MinusIcon, PagesIcon, PlusIcon, ScissorsIcon, ScrollIcon 
 /** Effective X-Ray state for this book: off everywhere, This Page on demand, or Whole Book indexed. */
 export type XrayState = 'off' | 'page' | 'book';
 
-const XRAY_STATES: Array<{ id: XrayState; label: string; help: string }> = [
-  { id: 'off', label: 'Off', help: 'No scanning at all, and no X-Ray button.' },
-  { id: 'page', label: 'This page', help: 'Tap X-Ray in the top bar to list the names and terms on the page you are reading.' },
-  {
-    id: 'book',
-    label: 'Whole book',
-    help: 'Indexes this book in the background, pausing while you scroll, so lookups show where a name first appears.',
-  },
+const XRAY_STATES: Array<{ id: XrayState; label: string }> = [
+  { id: 'off', label: 'Off' },
+  { id: 'page', label: 'Page' },
+  { id: 'book', label: 'Book' },
 ];
 
-const LOOKUP_MODES: Array<{ id: LookupMode; label: string; help: string }> = [
-  { id: 'wiki', label: 'Wiki', help: 'Select text, then tap Look up for Wikipedia, a photo and a map.' },
-  { id: 'native', label: 'Safari', help: "Uses iPhone's built-in Look Up in the menu above your selection." },
-  { id: 'both', label: 'Both', help: "iPhone's Look Up menu above the words, and Owl's Wikipedia button below." },
+const LOOKUP_MODES: Array<{ id: LookupMode; label: string }> = [
+  { id: 'wiki', label: 'Wiki' },
+  { id: 'native', label: 'iOS' },
+  { id: 'both', label: 'Both' },
 ];
 
 const THEMES: Array<{ id: ReaderTheme; label: string; swatch: string; ink: string }> = [
@@ -36,12 +32,13 @@ interface Props {
   /** Current PDF zoom as a multiplier of fit-width. */
   zoom: number;
   onSettings: (patch: Partial<Settings>) => void;
-  /** 1 = in, -1 = out, 0 = fit width */
+  /** Theme changes go through the shell, which crossfades them. */
+  onTheme: (theme: ReaderTheme) => void;
+  /** A theme being switched to: its swatch shows as selected right away. */
+  pendingTheme?: ReaderTheme | null;
+  /** 1 = in, -1 = out, 0 = fit the text to the screen */
   onZoom: (dir: 1 | -1 | 0) => void;
   onClose: () => void;
-  /** This book's context hint for lookups. */
-  contextTag: string;
-  onContextTag: (tag: string) => void;
   xray: XrayState;
   onXray: (state: XrayState) => void;
   /** Whole-book indexing progress, when indexing is on. */
@@ -50,16 +47,16 @@ interface Props {
   onClips: () => void;
 }
 
-/** Reading settings popover: theme, layout (Pages / Scroll) and zoom. */
+/** Reading settings popover: clips, theme, layout, look up, X-Ray and zoom. */
 export default function ReaderSettings({
   open,
   settings,
   zoom,
   onSettings,
+  onTheme,
+  pendingTheme,
   onZoom,
   onClose,
-  contextTag,
-  onContextTag,
   xray,
   onXray,
   indexProgress,
@@ -83,7 +80,8 @@ export default function ReaderSettings({
         role="dialog"
         aria-modal="true"
         aria-label="Reading settings"
-        className="absolute rounded-2xl bg-surface p-4 text-fg shadow-[0_12px_40px_-8px_rgb(0_0_0/0.45)] ring-1 ring-line"
+        className="settings-panel no-scrollbar absolute rounded-[22px] bg-surface p-4 text-fg shadow-[0_12px_40px_-8px_rgb(0_0_0/0.45)] ring-1 ring-line"
+        data-open={open}
         style={{
           top: 'calc(56px + env(safe-area-inset-top))',
           right: 'max(12px, env(safe-area-inset-right))',
@@ -91,10 +89,6 @@ export default function ReaderSettings({
           maxHeight: 'calc(100dvh - 68px - env(safe-area-inset-top) - env(safe-area-inset-bottom))',
           overflowY: 'auto',
           overscrollBehavior: 'contain',
-          transformOrigin: 'top right',
-          transform: open ? 'none' : 'scale(0.94) translateY(-6px)',
-          opacity: open ? 1 : 0,
-          transition: 'transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 140ms ease-out',
         }}
       >
         <button
@@ -112,15 +106,15 @@ export default function ReaderSettings({
             <button
               key={t.id}
               role="radio"
-              aria-checked={settings.theme === t.id}
-              onClick={() => onSettings({ theme: t.id })}
-              className={`flex flex-col items-center gap-1 rounded-xl py-2.5 text-[13px] font-medium ring-1 transition ${
-                settings.theme === t.id ? 'ring-2 ring-accent' : 'ring-line'
+              aria-checked={(pendingTheme ?? settings.theme) === t.id}
+              aria-label={t.label}
+              onClick={() => onTheme(t.id)}
+              className={`seg-press flex h-12 items-center justify-center rounded-xl ring-1 ${
+                (pendingTheme ?? settings.theme) === t.id ? 'ring-2 ring-accent' : 'ring-line'
               }`}
               style={{ background: t.swatch, color: t.ink }}
             >
               <span className="font-serif text-[18px] leading-none">Aa</span>
-              {t.label}
             </button>
           ))}
         </div>
@@ -138,7 +132,7 @@ export default function ReaderSettings({
               role="radio"
               aria-checked={settings.flow === o.id}
               onClick={() => onSettings({ flow: o.id })}
-              className={`flex items-center justify-center gap-2 rounded-lg py-2 text-[14px] font-medium transition ${
+              className={`flex items-center justify-center gap-2 seg-press rounded-lg py-2 text-[14px] font-medium ${
                 settings.flow === o.id ? 'bg-surface shadow-sm ring-1 ring-line' : 'text-muted'
               }`}
             >
@@ -147,9 +141,6 @@ export default function ReaderSettings({
             </button>
           ))}
         </div>
-        <p className="mt-1.5 text-[12px] text-muted">
-          {settings.flow === 'paginated' ? 'Swipe or tap the edges to turn pages.' : 'Scroll continuously, top to bottom.'}
-        </p>
 
         <Label>Look up</Label>
         <div className="grid grid-cols-3 gap-1 rounded-xl bg-surface-2 p-1" role="radiogroup" aria-label="Look up with">
@@ -159,7 +150,7 @@ export default function ReaderSettings({
               role="radio"
               aria-checked={settings.lookupMode === m.id}
               onClick={() => onSettings({ lookupMode: m.id })}
-              className={`rounded-lg py-2 text-[14px] font-medium transition ${
+              className={`seg-press rounded-lg py-2 text-[14px] font-medium ${
                 settings.lookupMode === m.id ? 'bg-surface shadow-sm ring-1 ring-line' : 'text-muted'
               }`}
             >
@@ -167,24 +158,6 @@ export default function ReaderSettings({
             </button>
           ))}
         </div>
-        <p className="mt-1.5 text-[12px] text-muted">{LOOKUP_MODES.find((m) => m.id === settings.lookupMode)?.help}</p>
-
-        <Label>Book context</Label>
-        <input
-          value={contextTag}
-          onChange={(e) => onContextTag(e.target.value)}
-          placeholder="e.g. Nvidia"
-          enterKeyHint="done"
-          autoCorrect="off"
-          spellCheck={false}
-          onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
-          aria-label="Book context"
-          className="h-10 w-full rounded-xl border border-line bg-bg px-3 text-[16px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
-        />
-        <p className="mt-1.5 text-[12px] text-muted">
-          Offered as a one-tap chip in the lookup drawer to narrow a search. Ambiguous words are matched to the names on the page
-          you're reading.
-        </p>
 
         <Label>X-Ray</Label>
         <div className="grid grid-cols-3 gap-1 rounded-xl bg-surface-2 p-1" role="radiogroup" aria-label="X-Ray">
@@ -194,7 +167,7 @@ export default function ReaderSettings({
               role="radio"
               aria-checked={xray === m.id}
               onClick={() => onXray(m.id)}
-              className={`rounded-lg py-2 text-[14px] font-medium transition ${
+              className={`seg-press rounded-lg py-2 text-[14px] font-medium ${
                 xray === m.id ? 'bg-surface shadow-sm ring-1 ring-line' : 'text-muted'
               }`}
             >
@@ -202,7 +175,6 @@ export default function ReaderSettings({
             </button>
           ))}
         </div>
-        <p className="mt-1.5 text-[12px] text-muted">{XRAY_STATES.find((m) => m.id === xray)?.help}</p>
         {xray === 'book' && indexProgress && (
           <div className="mt-2">
             <div
@@ -218,11 +190,9 @@ export default function ReaderSettings({
                 style={{ width: `${indexProgress.total ? (indexProgress.indexed / indexProgress.total) * 100 : 0}%` }}
               />
             </div>
-            <p className="mt-1 text-[12px] text-muted tabular-nums" data-testid="index-progress">
-              {indexProgress.indexed >= indexProgress.total
-                ? `Indexed all ${indexProgress.total} pages`
-                : `Indexed ${indexProgress.indexed} / ${indexProgress.total} pages`}
-            </p>
+            <span className="sr-only" data-testid="index-progress">
+              {indexProgress.indexed >= indexProgress.total ? 'done' : `${indexProgress.indexed}/${indexProgress.total}`}
+            </span>
           </div>
         )}
 
@@ -230,13 +200,12 @@ export default function ReaderSettings({
         <Stepper
           value={`${Math.round(zoom * 100)}%`}
           onValue={() => onZoom(0)}
-          valueLabel={`Zoom ${Math.round(zoom * 100)}%. Reset to fit width`}
+          valueLabel={`Zoom ${Math.round(zoom * 100)}%. Fit text to screen`}
           onMinus={() => onZoom(-1)}
           onPlus={() => onZoom(1)}
           minusLabel="Zoom out"
           plusLabel="Zoom in"
         />
-        <p className="mt-1.5 text-[12px] text-muted">Tap the percentage to fit the page width. You can also pinch to zoom.</p>
       </section>
     </div>
   );

@@ -1,13 +1,11 @@
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { pdfjs, type PDFDocumentProxy } from '../lib/pdfjs';
-import { localFlag } from '../lib/settings';
 import { pageTextFromItems } from '../lib/terms';
 import type { ReaderTheme } from '../types';
 import { PAGE_BG, isInverted, tintCanvas } from '../lib/tint';
 import { pageImageMatrices, toCanvasSpace } from '../lib/pageImages';
 import { PreviewCache, encodePreview } from '../lib/previews';
-import { tapZone, type ReaderHandle, type ReaderProps } from './readerTypes';
-import { CloseIcon } from './icons';
+import { tapZone, type OutlineItem, type ReaderHandle, type ReaderProps } from './readerTypes';
 import { prefersReducedMotion } from '../hooks/useFocusTrap';
 
 const MIN_ZOOM = 0.6;
@@ -36,6 +34,116 @@ const PREVIEW_BEHIND = 15; // …and this many behind
 const PREVIEW_BATCH = 1; // per idle task, so a touch never waits long on the main thread
 
 const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
+/** Fit text: the text column fills the screen, with this much space each side (CSS px). */
+const FIT_MARGIN = 14;
+const FIT_MAX = 2.5;
+const FIT_SAMPLE = 6; // pages read to find the text column
+/** Saved zoom that means "fit text" (0, absent, or the pre-1.8.2 default of fit width). */
+const isAutoZoom = (z: number | undefined) => !z || z === 1;
+
+type TextBox = { x0: number; x1: number };
+
+/** The text column across a few pages, as fractions of page width (2nd–98th percentile of
+ * line starts and ends, so a stray page number or marginal note doesn't widen it). */
+async function findTextBox(doc: PDFDocumentProxy, from: number): Promise<TextBox | null> {
+  const lefts: number[] = [];
+  const rights: number[] = [];
+  for (let n = from; n < from + FIT_SAMPLE && n <= doc.numPages; n++) {
+    const p = await doc.getPage(n);
+    const vp = p.getViewport({ scale: 1 });
+    const content = await p.getTextContent();
+    for (const it of content.items) {
+      if (!('str' in it) || !it.str.trim() || !it.width) continue;
+      const [a, b, , , e, f] = it.transform as number[];
+      if (Math.abs(b) > 0.01 || a <= 0) continue; // rotated text
+      const [l] = vp.convertToViewportPoint(e, f);
+      const [r] = vp.convertToViewportPoint(e + it.width, f);
+      lefts.push(Math.min(l, r) / vp.width);
+      rights.push(Math.max(l, r) / vp.width);
+    }
+  }
+  if (lefts.length < 8) return null;
+  lefts.sort((x, y) => x - y);
+  rights.sort((x, y) => x - y);
+  const x0 = Math.max(0, lefts[Math.floor(lefts.length * 0.02)]);
+  const x1 = Math.min(1, rights[Math.ceil(rights.length * 0.98) - 1]);
+  return x1 - x0 > 0.3 ? { x0, x1 } : null;
+}
+
+/** Flattens the PDF outline to the chapters a reader would pick from (two levels deep). */
+async function readOutline(doc: PDFDocumentProxy): Promise<OutlineItem[]> {
+  const outline = await doc.getOutline().catch(() => null);
+  if (!outline?.length) return [];
+  const out: OutlineItem[] = [];
+  const walk = async (items: typeof outline, depth: number) => {
+    for (const it of items) {
+      let page = 0;
+      try {
+        const dest = typeof it.dest === 'string' ? await doc.getDestination(it.dest) : it.dest;
+        const ref = dest?.[0];
+        if (ref && typeof ref === 'object') page = (await doc.getPageIndex(ref)) + 1;
+        else if (typeof ref === 'number') page = ref + 1;
+      } catch {
+        /* unresolvable entry */
+      }
+      const title = it.title?.trim();
+      if (page && title) out.push({ title, page, depth });
+      if (depth < 1 && it.items?.length) await walk(it.items, depth + 1);
+    }
+  };
+  await walk(outline, 0);
+  return out;
+}
+
+/** Renders one page into a fresh canvas with the theme baked in (see tint.ts). */
+async function drawPage(
+  doc: PDFDocumentProxy,
+  num: number,
+  scale: number,
+  ratio: number,
+  theme: ReaderTheme,
+  onTask?: (t: { cancel(): void }) => void,
+  isCancelled: () => boolean = () => false,
+): Promise<HTMLCanvasElement | null> {
+  const p = await doc.getPage(num);
+  if (isCancelled()) return null;
+  const viewport = p.getViewport({ scale });
+  let canvas = document.createElement('canvas');
+  canvas.width = Math.floor(viewport.width * ratio);
+  canvas.height = Math.floor(viewport.height * ratio);
+  const task = p.render({
+    canvas,
+    viewport,
+    transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined,
+    background: '#ffffff',
+  });
+  onTask?.(task);
+  try {
+    await task.promise;
+  } catch {
+    canvas.width = 0;
+    return null;
+  }
+  if (isCancelled()) {
+    canvas.width = 0;
+    return null;
+  }
+  // dark/black: find the page's photos so they keep their colours (see tint.ts)
+  const imgs = isInverted(theme) ? toCanvasSpace(await pageImageMatrices(p, task), viewport.transform, ratio) : [];
+  if (isCancelled()) {
+    canvas.width = 0;
+    return null;
+  }
+  canvas = tintCanvas(canvas, theme, imgs);
+  canvas.className = 'pdf-canvas';
+  canvas.setAttribute('aria-hidden', 'true');
+  return canvas;
+}
+
+/** First-pass resolution for a page box (capped at 2x DPR / 2.2 MP). */
+const firstPassRatio = (baseW: number, baseH: number, scale: number) =>
+  Math.min(window.devicePixelRatio || 1, FIRST_PASS_MAX_DPR, Math.sqrt(FIRST_PASS_PIXELS / (baseW * scale * baseH * scale)));
+const canvasKey = (scale: number, theme: ReaderTheme) => `${scale.toFixed(4)}|${window.devicePixelRatio || 1}|${theme}`;
 
 type Size = { w: number; h: number };
 type Task = () => Promise<void>;
@@ -147,824 +255,876 @@ interface Props extends ReaderProps {
  * Page sizes are fetched lazily around the current page instead of for the whole document.
  * Zoom is a multiplier of fit-to-width, so rotating keeps the same page and relative zoom.
  */
-const PdfReader = forwardRef<ReaderHandle, Props>(function PdfReader(props, ref) {
-  const { book, data, theme, flow } = props;
-  const paged = flow === 'paginated';
-  const propsRef = useRef(props);
-  propsRef.current = props;
+// memo: the shell re-renders on every chrome toggle and selection change; the reader needn't.
+const PdfReader = memo(
+  forwardRef<ReaderHandle, Props>(function PdfReader(props, ref) {
+    const { book, data, theme, flow } = props;
+    const paged = flow === 'paginated';
+    const propsRef = useRef(props);
+    propsRef.current = props;
 
-  const scrollerRef = useRef<HTMLDivElement>(null);
-  const slotRefs = useRef<Array<HTMLDivElement | null>>([]);
-  const pageRefs = useRef<Array<HTMLDivElement | null>>([]);
-  const trackRef = useRef<HTMLDivElement>(null);
-  const scheduler = useMemo(() => new RenderScheduler(), []);
+    const scrollerRef = useRef<HTMLDivElement>(null);
+    const slotRefs = useRef<Array<HTMLDivElement | null>>([]);
+    const pageRefs = useRef<Array<HTMLDivElement | null>>([]);
+    const trackRef = useRef<HTMLDivElement>(null);
+    const scheduler = useMemo(() => new RenderScheduler(), []);
 
-  const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
-  const [sizes, setSizes] = useState<Size[]>([]);
-  const [page, setPage] = useState(() => Math.max(1, book.progress.pdfPage ?? 1));
-  const [zoom, setZoom] = useState(() => clampZoom(book.progress.pdfScale ?? 1));
-  const [viewport, setViewport] = useState<Size>({ w: 0, h: 0 });
-  const [range, setRange] = useState<[number, number]>([page - 1, page + 1]);
-  const [textless, setTextless] = useState<Set<number>>(() => new Set());
-  const scanKey = `owl.scanBanner.${book.id}`;
-  const [bannerDismissed, setBannerDismissed] = useState(() => localFlag(scanKey)[0]);
+    const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
+    const [sizes, setSizes] = useState<Size[]>([]);
+    const [page, setPage] = useState(() => Math.max(1, book.progress.pdfPage ?? 1));
+    const [manualZoom, setManualZoom] = useState(() => clampZoom(book.progress.pdfScale || 1));
+    /** Fit text (the default): zoom follows the text column, in either orientation. */
+    const [autoFit, setAutoFit] = useState(() => isAutoZoom(book.progress.pdfScale));
+    const [textBox, setTextBox] = useState<TextBox | null>(null);
+    const [outline, setOutline] = useState<OutlineItem[] | null>(null);
+    const [viewport, setViewport] = useState<Size>({ w: 0, h: 0 });
+    const [range, setRange] = useState<[number, number]>([page - 1, page + 1]);
 
-  const numPages = sizes.length;
-  const pageRef = useRef(page);
-  pageRef.current = page;
-  scheduler.current = page;
-  /** Scroll mode: the page the mounted window is centred on. Follows the scroll position while
-   * scrolling (cheap, no pdf.js work) so a fling never runs past the mounted boxes. */
-  const [mountAt, setMountAt] = useState(page);
-  const mountAtRef = useRef(mountAt);
-  mountAtRef.current = mountAt;
-  /** Direction of the last scroll (+1 forward, -1 back): lookahead and prefetch lean that way. */
-  const dirRef = useRef(1);
-  const lastPosRef = useRef(0);
+    const numPages = sizes.length;
+    const pageRef = useRef(page);
+    pageRef.current = page;
+    scheduler.current = page;
+    /** Scroll mode: the page the mounted window is centred on. Follows the scroll position while
+     * scrolling (cheap, no pdf.js work) so a fling never runs past the mounted boxes. */
+    const [mountAt, setMountAt] = useState(page);
+    const mountAtRef = useRef(mountAt);
+    mountAtRef.current = mountAt;
+    /** Direction of the last scroll (+1 forward, -1 back): lookahead and prefetch lean that way. */
+    const dirRef = useRef(1);
+    const lastPosRef = useRef(0);
 
-  /** Where to put the reader back after a layout change: page + fraction scrolled into it. */
-  const anchor = useRef({ page, frac: 0 });
-  const needsRestore = useRef(true);
-  // switching Pages <-> Scroll rebuilds the layout: restore before anything re-reads the position
-  const lastFlow = useRef(flow);
-  if (lastFlow.current !== flow) {
-    lastFlow.current = flow;
-    needsRestore.current = true;
-    anchor.current = { page, frac: 0 };
-  }
-  const zoomFocal = useRef<{ fx: number; fy: number; mx: number; my: number; page: number } | null>(null);
+    /** Where to put the reader back after a layout change: page + fraction scrolled into it. */
+    const anchor = useRef({ page, frac: 0 });
+    const needsRestore = useRef(true);
+    // switching Pages <-> Scroll rebuilds the layout: restore before anything re-reads the position
+    const lastFlow = useRef(flow);
+    if (lastFlow.current !== flow) {
+      lastFlow.current = flow;
+      needsRestore.current = true;
+      anchor.current = { page, frac: 0 };
+    }
+    const zoomFocal = useRef<{ fx: number; fy: number; mx: number; my: number; page: number } | null>(null);
 
-  // ---- lazy page sizes. Real sizes arrive from the probe or from a page's own render; they're
-  // applied in one batch while the reader is still, and the restore effect then puts the anchor
-  // page back exactly where it was, so a page above changing height never moves the text you read.
-  const sizesRef = useRef(sizes);
-  sizesRef.current = sizes;
-  const probed = useRef(new Set<number>());
-  const pendingSizes = useRef(new Map<number, Size>());
-  const flushSizes = useCallback(() => {
-    if (scheduler.scrolling || pendingSizes.current.size === 0) return;
-    const updates = [...pendingSizes.current];
-    pendingSizes.current.clear();
-    needsRestore.current = true;
-    setSizes((prev) => {
-      const next = prev.slice();
-      for (const [num, sz] of updates) if (next[num - 1]) next[num - 1] = sz;
-      return next;
-    });
-  }, [scheduler]);
-  const reportSize = useCallback(
-    (num: number, w: number, h: number) => {
-      probed.current.add(num);
-      const cur = sizesRef.current[num - 1];
-      if (!cur || (Math.abs(cur.w - w) <= 1 && Math.abs(cur.h - h) <= 1)) return;
-      pendingSizes.current.set(num, { w, h });
-      flushSizes();
-    },
-    [flushSizes],
-  );
-
-  // ---- load document + page sizes
-  useEffect(() => {
-    let cancelled = false;
-    let loaded: PDFDocumentProxy | null = null;
-    const task = pdfjs.getDocument({ data: new Uint8Array(data.slice(0)) });
-    task.promise.then(
-      async (d) => {
-        if (cancelled) return void d.destroy();
-        loaded = d;
-        const start = Math.min(Math.max(1, pageRef.current), d.numPages);
-        // Only page 1 and the start page are measured up front. Every other page assumes page 1's
-        // size until the lazy probe (or its own render) reports the real one.
-        const first = (await d.getPage(1)).getViewport({ scale: 1 });
-        const startVp = start === 1 ? first : (await d.getPage(start)).getViewport({ scale: 1 });
-        if (cancelled) return;
-        const initial = Array.from({ length: d.numPages }, () => ({ w: first.width, h: first.height }));
-        initial[start - 1] = { w: startVp.width, h: startVp.height };
-        probed.current = new Set([1, start]);
-        pendingSizes.current.clear();
-        anchor.current = { page: start, frac: 0 };
-        needsRestore.current = true;
-        setPage(start);
-        setRange([start - 1, start + 1]);
-        setSizes(initial);
-        setDoc(d);
-      },
-      (err) => {
-        console.error(err);
-        if (!cancelled) propsRef.current.onError("This PDF couldn't be opened. It may be damaged or password-protected.");
-      },
-    );
-    return () => {
-      cancelled = true;
-      task.destroy();
-      loaded?.destroy();
-    };
-  }, [data]);
-
-  // ---- viewport size (rotation / resize)
-  useEffect(() => {
-    const el = scrollerRef.current!;
-    const measure = () => {
-      const next = { w: el.clientWidth, h: el.clientHeight };
-      setViewport((v) => {
-        if (v.w === next.w && v.h === next.h) return v;
-        needsRestore.current = true;
+    // ---- lazy page sizes. Real sizes arrive from the probe or from a page's own render; they're
+    // applied in one batch while the reader is still, and the restore effect then puts the anchor
+    // page back exactly where it was, so a page above changing height never moves the text you read.
+    const sizesRef = useRef(sizes);
+    sizesRef.current = sizes;
+    const probed = useRef(new Set<number>());
+    const pendingSizes = useRef(new Map<number, Size>());
+    const flushSizes = useCallback(() => {
+      if (scheduler.scrolling || pendingSizes.current.size === 0) return;
+      const updates = [...pendingSizes.current];
+      pendingSizes.current.clear();
+      needsRestore.current = true;
+      setSizes((prev) => {
+        const next = prev.slice();
+        for (const [num, sz] of updates) if (next[num - 1]) next[num - 1] = sz;
         return next;
       });
-    };
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    measure();
-    return () => ro.disconnect();
-  }, []);
+    }, [scheduler]);
+    const reportSize = useCallback(
+      (num: number, w: number, h: number) => {
+        probed.current.add(num);
+        const cur = sizesRef.current[num - 1];
+        if (!cur || (Math.abs(cur.w - w) <= 1 && Math.abs(cur.h - h) <= 1)) return;
+        pendingSizes.current.set(num, { w, h });
+        flushSizes();
+      },
+      [flushSizes],
+    );
 
-  // ---- per-page CSS size
-  const availW = Math.max(100, viewport.w - PAD * 2);
-  const scaleOf = useCallback((i: number) => (availW / sizes[i].w) * zoom, [availW, sizes, zoom]);
-  const cssSize = (i: number) => {
-    const s = scaleOf(i);
-    return { w: Math.floor(sizes[i].w * s), h: Math.floor(sizes[i].h * s) };
-  };
-  /** Scroll-mode geometry from sizes alone (no DOM): box heights and each page's top inside the
-   * track, not counting the track's top padding. Spacers make the DOM match these exactly. */
-  const geo = useMemo(() => {
-    const n = sizes.length;
-    const heights = new Array<number>(n);
-    const tops = new Array<number>(n + 1);
-    let maxW = 0;
-    tops[0] = 0;
-    for (let i = 0; i < n; i++) {
+    // ---- load document + page sizes
+    useEffect(() => {
+      let cancelled = false;
+      let loaded: PDFDocumentProxy | null = null;
+      const task = pdfjs.getDocument({ data: new Uint8Array(data.slice(0)) });
+      task.promise.then(
+        async (d) => {
+          if (cancelled) return void d.destroy();
+          loaded = d;
+          const start = Math.min(Math.max(1, pageRef.current), d.numPages);
+          // Only page 1 and the start page are measured up front. Every other page assumes page 1's
+          // size until the lazy probe (or its own render) reports the real one.
+          const first = (await d.getPage(1)).getViewport({ scale: 1 });
+          const startVp = start === 1 ? first : (await d.getPage(start)).getViewport({ scale: 1 });
+          if (cancelled) return;
+          const initial = Array.from({ length: d.numPages }, () => ({ w: first.width, h: first.height }));
+          initial[start - 1] = { w: startVp.width, h: startVp.height };
+          probed.current = new Set([1, start]);
+          pendingSizes.current.clear();
+          anchor.current = { page: start, frac: 0 };
+          needsRestore.current = true;
+          setPage(start);
+          setRange([start - 1, start + 1]);
+          setSizes(initial);
+          setDoc(d);
+          findTextBox(d, Math.max(1, Math.min(start, d.numPages - FIT_SAMPLE + 1)))
+            .then((tb) => !cancelled && setTextBox(tb))
+            .catch(() => {});
+        },
+        (err) => {
+          console.error(err);
+          if (!cancelled) propsRef.current.onError("This PDF couldn't be opened. It may be damaged or password-protected.");
+        },
+      );
+      return () => {
+        cancelled = true;
+        task.destroy();
+        loaded?.destroy();
+      };
+    }, [data]);
+
+    // ---- viewport size (rotation / resize)
+    useEffect(() => {
+      const el = scrollerRef.current!;
+      const measure = () => {
+        const next = { w: el.clientWidth, h: el.clientHeight };
+        setViewport((v) => {
+          if (v.w === next.w && v.h === next.h) return v;
+          needsRestore.current = true;
+          return next;
+        });
+      };
+      const ro = new ResizeObserver(measure);
+      ro.observe(el);
+      measure();
+      return () => ro.disconnect();
+    }, []);
+
+    // ---- per-page CSS size
+    const availW = Math.max(100, viewport.w - PAD * 2);
+    const fitZoom = useMemo(() => {
+      if (!textBox || !viewport.w) return 1;
+      const z = (viewport.w - FIT_MARGIN * 2) / ((textBox.x1 - textBox.x0) * availW);
+      return z < 1.02 ? 1 : Math.min(FIT_MAX, z);
+    }, [textBox, viewport.w, availW]);
+    const zoom = autoFit ? fitZoom : manualZoom;
+    const fitting = autoFit && fitZoom > 1;
+    const fittingRef = useRef(fitting);
+    fittingRef.current = fitting;
+    const textBoxRef = useRef(textBox);
+    textBoxRef.current = textBox;
+    // a zoom that isn't a pinch (fit text arriving, rotating, the Fit button) keeps the reading spot
+    const lastZoom = useRef(zoom);
+    if (lastZoom.current !== zoom) {
+      lastZoom.current = zoom;
+      if (!zoomFocal.current) needsRestore.current = true;
+    }
+    const scaleOf = useCallback((i: number) => (availW / sizes[i].w) * zoom, [availW, sizes, zoom]);
+    const cssSize = (i: number) => {
       const s = scaleOf(i);
-      heights[i] = Math.floor(sizes[i].h * s);
-      maxW = Math.max(maxW, Math.floor(sizes[i].w * s));
-      tops[i + 1] = tops[i] + heights[i] + GAP;
-    }
-    return { heights, tops, maxW };
-  }, [sizes, scaleOf]);
-  const geoRef = useRef(geo);
-  geoRef.current = geo;
-  /** The track's top padding (8px + the safe-area inset), read from CSS. */
-  const padTop = () => (trackRef.current ? parseFloat(getComputedStyle(trackRef.current).paddingTop) || 0 : 0);
-
-  // ---- which page is current / which pages are near (from scroll position)
-  const locate = useCallback(() => {
-    const el = scrollerRef.current;
-    if (!el || !numPages) return;
-    let current: number;
-    let frac = 0;
-    let lo: number;
-    let hi: number;
-    if (paged) {
-      const w = el.clientWidth || 1;
-      const pos = el.scrollLeft / w;
-      current = Math.min(numPages, Math.max(1, Math.round(pos) + 1));
-      lo = Math.floor(pos);
-      hi = Math.ceil(pos) + 2;
-      const slot = slotRefs.current[current - 1];
-      if (slot && slot.scrollHeight > slot.clientHeight) frac = slot.scrollTop / slot.scrollHeight;
-    } else {
-      const { tops, heights } = geoRef.current;
-      const top = el.scrollTop - padTop();
-      const probe = top + el.clientHeight * 0.3;
-      // binary search the last page whose top is above the probe line
-      let a = 0;
-      let b = numPages - 1;
-      while (a < b) {
-        const m = (a + b + 1) >> 1;
-        if (tops[m] <= probe) a = m;
-        else b = m - 1;
+      return { w: Math.floor(sizes[i].w * s), h: Math.floor(sizes[i].h * s) };
+    };
+    /** Scroll-mode geometry from sizes alone (no DOM): box heights and each page's top inside the
+     * track, not counting the track's top padding. Spacers make the DOM match these exactly. */
+    const geo = useMemo(() => {
+      const n = sizes.length;
+      const heights = new Array<number>(n);
+      const tops = new Array<number>(n + 1);
+      let maxW = 0;
+      tops[0] = 0;
+      for (let i = 0; i < n; i++) {
+        const s = scaleOf(i);
+        heights[i] = Math.floor(sizes[i].h * s);
+        maxW = Math.max(maxW, Math.floor(sizes[i].w * s));
+        tops[i + 1] = tops[i] + heights[i] + GAP;
       }
-      current = a + 1;
-      frac = (top - tops[a]) / Math.max(1, heights[a]);
-      if (Math.abs(el.scrollTop - lastPosRef.current) > 4) dirRef.current = el.scrollTop > lastPosRef.current ? 1 : -1;
-      lastPosRef.current = el.scrollTop;
-      // visible range plus lookahead, leaning the way the reader last moved: 3 screens ahead, 1 behind
-      const above = dirRef.current > 0 ? 1 : 3;
-      const below = dirRef.current > 0 ? 3 : 1;
-      let first = a;
-      while (first > 0 && tops[first] > top - el.clientHeight * above) first--;
-      let last = a;
-      while (last < numPages - 1 && tops[last + 1] < top + el.clientHeight * below) last++;
-      lo = first + 1;
-      hi = last + 1;
-    }
-    if (paged && current !== pageRef.current) dirRef.current = current > pageRef.current ? 1 : -1;
-    anchor.current = { page: current, frac };
-    // the scheduler must rank by the new page now: settle pumps before React re-renders
-    scheduler.current = current;
-    scheduler.dir = dirRef.current;
-    scheduler.dropOutside(lo, hi);
-    if (current !== pageRef.current) setPage(current);
-    if (!paged) setMountAt(current);
-    setRange((r) => (r[0] === lo && r[1] === hi ? r : [lo, hi]));
-  }, [numPages, paged, scheduler]);
+      return { heights, tops, maxW };
+    }, [sizes, scaleOf]);
+    const geoRef = useRef(geo);
+    geoRef.current = geo;
+    /** The track's top padding (8px + the safe-area inset), read from CSS. */
+    const padTop = () => (trackRef.current ? parseFloat(getComputedStyle(trackRef.current).paddingTop) || 0 : 0);
 
-  // ---- restore position after anything that changes layout (open, rotate, zoom, flow)
-  useLayoutEffect(() => {
-    const el = scrollerRef.current;
-    if (!el || !numPages || !viewport.w) return;
-    const focal = zoomFocal.current;
-    zoomFocal.current = null;
-    // clear any pinch preview transform now that real sizes are in the DOM
-    for (const p of pageRefs.current) if (p?.style.transform) p.style.transform = '';
-    if (trackRef.current?.style.transform) trackRef.current.style.transform = '';
-
-    if (focal) {
-      const pageEl = pageRefs.current[focal.page - 1];
-      const container = paged ? slotRefs.current[focal.page - 1] : el;
-      if (pageEl && container) {
-        if (paged) el.scrollLeft = (focal.page - 1) * el.clientWidth;
-        container.scrollLeft = pageEl.offsetLeft + focal.fx * pageEl.offsetWidth - focal.mx;
-        container.scrollTop = pageEl.offsetTop + focal.fy * pageEl.offsetHeight - focal.my;
-        needsRestore.current = false;
-        locate();
-        return;
-      }
-    }
-    if (!needsRestore.current) return;
-    needsRestore.current = false;
-    const { page: p, frac } = anchor.current;
-    if (paged) {
-      el.scrollLeft = (p - 1) * el.clientWidth;
-      const slot = slotRefs.current[p - 1];
-      if (slot) slot.scrollTop = frac * slot.scrollHeight;
-    } else {
-      const { tops, heights } = geoRef.current;
-      el.scrollTop = padTop() + tops[p - 1] + frac * heights[p - 1];
-    }
-    locate();
-  }, [viewport, zoom, sizes, paged, numPages, locate]);
-
-  // ---- scroll handling. While the finger or momentum is moving we do *nothing* but note
-  // that we're scrolling: no React state, no DOM changes, no pdf.js work. iOS scrolls on its
-  // own thread, but it still needs the main thread free to paint newly exposed content.
-  // Position, page label and which pages are live all update once scrolling settles.
-  useEffect(() => {
-    const el = scrollerRef.current!;
-    let idle: number | undefined;
-    let frame = 0;
-    const settle = () => {
-      scheduler.scrolling = false;
-      locate();
-      flushSizes();
-      scheduler.pump();
-    };
-    // Scroll mode, once a frame at most: keep page boxes mounted under (and ahead of) the
-    // viewport. Reads scrollTop and the size table only; boxes show their cached preview.
-    let lastTop = el.scrollTop;
-    const track = () => {
-      frame = 0;
-      const n = geoRef.current.tops.length - 1;
-      if (paged || !n) return;
-      const top = el.scrollTop;
-      const dir = top >= lastTop ? 1 : -1;
-      lastTop = top;
-      const { tops } = geoRef.current;
-      const probe = top - padTop() + el.clientHeight * 0.5;
-      let a = 0;
-      let b = n - 1;
-      while (a < b) {
-        const m = (a + b + 1) >> 1;
-        if (tops[m] <= probe) a = m;
-        else b = m - 1;
-      }
-      const centre = Math.min(n, Math.max(1, a + 1 + dir * MOUNT_LEAD));
-      if (Math.abs(centre - mountAtRef.current) >= MOUNT_LEAD) {
-        mountAtRef.current = centre;
-        setMountAt(centre);
-      }
-    };
-    const onScroll = () => {
-      scheduler.scrolling = true;
-      window.clearTimeout(idle);
-      idle = window.setTimeout(settle, SCROLL_IDLE_MS);
-      if (!frame) frame = requestAnimationFrame(track);
-    };
-    el.addEventListener('scroll', onScroll, { passive: true });
-    // in Pages mode the live slots scroll vertically too (tall or zoomed pages)
-    el.addEventListener('scroll', onScroll, { passive: true, capture: true });
-    return () => {
-      el.removeEventListener('scroll', onScroll);
-      el.removeEventListener('scroll', onScroll, { capture: true });
-      window.clearTimeout(idle);
-      cancelAnimationFrame(frame);
-    };
-  }, [locate, scheduler, flushSizes, paged]);
-
-  // ---- probe real page sizes for current ± PROBE_WINDOW, nearest first, after the current
-  // page's canvas and text layer (it's an idle task). Replaces 1.1's loop over every page.
-  useEffect(() => {
-    if (!doc || !numPages) return;
-    let cancelled = false;
-    const pending = () => {
-      const out: number[] = [];
-      for (let d = 0; d <= PROBE_WINDOW; d++) {
-        for (const n of d ? [page + d, page - d] : [page]) {
-          if (n >= 1 && n <= numPages && !probed.current.has(n)) out.push(n);
-        }
-      }
-      return out;
-    };
-    const step = async () => {
-      for (const n of pending().slice(0, PROBE_BATCH)) {
-        if (cancelled) return;
-        const v = (await doc.getPage(n)).getViewport({ scale: 1 });
-        if (cancelled) return;
-        reportSize(n, v.width, v.height);
-      }
-      if (!cancelled && pending().length) scheduler.requestIdle('probe', 10, step);
-    };
-    if (pending().length) scheduler.requestIdle('probe', 10, step);
-    return () => {
-      cancelled = true;
-      scheduler.cancelIdle('probe');
-    };
-  }, [doc, numPages, page, reportSize, scheduler]);
-
-  // ---- report progress through the shell's single funnel
-  const firstReport = useRef(true);
-  useEffect(() => {
-    if (!numPages) return;
-    const fraction = numPages > 1 ? (page - 1) / (numPages - 1) : 1;
-    propsRef.current.onLocation({ fraction, page, pageCount: numPages, label: `Page ${page} of ${numPages}`, zoom });
-    propsRef.current.onProgressChange({
-      pdfPage: page,
-      pdfScale: zoom,
-      percentage: Math.round((page / numPages) * 1000) / 10,
-    });
-    if (firstReport.current) firstReport.current = false;
-    else propsRef.current.onPageTurn();
-  }, [page, zoom, numPages]);
-
-  const goToPage = useCallback(
-    (n: number, smooth = false, frac = 0) => {
+    // ---- which page is current / which pages are near (from scroll position)
+    const locate = useCallback(() => {
       const el = scrollerRef.current;
       if (!el || !numPages) return;
-      const target = Math.min(numPages, Math.max(1, Math.round(n)));
-      const behavior: ScrollBehavior =
-        smooth && !prefersReducedMotion() && Math.abs(target - pageRef.current) <= 2 ? 'smooth' : 'instant';
-      if (paged) el.scrollTo({ left: (target - 1) * el.clientWidth, behavior });
-      else
-        el.scrollTo({
-          top: padTop() + geoRef.current.tops[target - 1] + frac * geoRef.current.heights[target - 1] - PAD,
-          behavior,
-        });
-      if (behavior === 'instant') requestAnimationFrame(locate);
-    },
-    [numPages, paged, locate],
-  );
+      let current: number;
+      let frac = 0;
+      let lo: number;
+      let hi: number;
+      if (paged) {
+        const w = el.clientWidth || 1;
+        const pos = el.scrollLeft / w;
+        current = Math.min(numPages, Math.max(1, Math.round(pos) + 1));
+        lo = Math.floor(pos);
+        hi = Math.ceil(pos) + 2;
+        const slot = slotRefs.current[current - 1];
+        if (slot && slot.scrollHeight > slot.clientHeight) frac = slot.scrollTop / slot.scrollHeight;
+      } else {
+        const { tops, heights } = geoRef.current;
+        const top = el.scrollTop - padTop();
+        const probe = top + el.clientHeight * 0.3;
+        // binary search the last page whose top is above the probe line
+        let a = 0;
+        let b = numPages - 1;
+        while (a < b) {
+          const m = (a + b + 1) >> 1;
+          if (tops[m] <= probe) a = m;
+          else b = m - 1;
+        }
+        current = a + 1;
+        frac = (top - tops[a]) / Math.max(1, heights[a]);
+        if (Math.abs(el.scrollTop - lastPosRef.current) > 4) dirRef.current = el.scrollTop > lastPosRef.current ? 1 : -1;
+        lastPosRef.current = el.scrollTop;
+        // visible range plus lookahead, leaning the way the reader last moved: 3 screens ahead, 1 behind
+        const above = dirRef.current > 0 ? 1 : 3;
+        const below = dirRef.current > 0 ? 3 : 1;
+        let first = a;
+        while (first > 0 && tops[first] > top - el.clientHeight * above) first--;
+        let last = a;
+        while (last < numPages - 1 && tops[last + 1] < top + el.clientHeight * below) last++;
+        lo = first + 1;
+        hi = last + 1;
+      }
+      if (paged && current !== pageRef.current) dirRef.current = current > pageRef.current ? 1 : -1;
+      anchor.current = { page: current, frac };
+      // the scheduler must rank by the new page now: settle pumps before React re-renders
+      scheduler.current = current;
+      scheduler.dir = dirRef.current;
+      scheduler.dropOutside(lo, hi);
+      if (current !== pageRef.current) setPage(current);
+      if (!paged) setMountAt(current);
+      setRange((r) => (r[0] === lo && r[1] === hi ? r : [lo, hi]));
+    }, [numPages, paged, scheduler]);
 
-  const next = useCallback(() => {
-    const el = scrollerRef.current;
-    if (!paged && el) el.scrollBy({ top: el.clientHeight * 0.85, behavior: prefersReducedMotion() ? 'instant' : 'smooth' });
-    else goToPage(pageRef.current + 1, true);
-  }, [goToPage, paged]);
-  const prev = useCallback(() => {
-    const el = scrollerRef.current;
-    if (!paged && el) el.scrollBy({ top: -el.clientHeight * 0.85, behavior: prefersReducedMotion() ? 'instant' : 'smooth' });
-    else goToPage(pageRef.current - 1, true);
-  }, [goToPage, paged]);
-
-  /** Change zoom keeping the point under (mx, my) — viewport coords — fixed on screen. */
-  const zoomAt = useCallback(
-    (nextZoom: number, mx?: number, my?: number) => {
+    // ---- restore position after anything that changes layout (open, rotate, zoom, flow)
+    useLayoutEffect(() => {
       const el = scrollerRef.current;
-      const z = clampZoom(nextZoom);
-      if (!el || z === zoom) return;
-      const p = pageRef.current;
-      const pageEl = pageRefs.current[p - 1];
-      const container = paged ? slotRefs.current[p - 1] : el;
-      if (pageEl && container) {
-        const rect = container.getBoundingClientRect();
-        const cx = (mx ?? rect.left + rect.width / 2) - rect.left;
-        const cy = (my ?? rect.top + rect.height / 2) - rect.top;
-        zoomFocal.current = {
-          page: p,
-          mx: cx,
-          my: cy,
-          fx: (container.scrollLeft + cx - pageEl.offsetLeft) / pageEl.offsetWidth,
-          fy: (container.scrollTop + cy - pageEl.offsetTop) / pageEl.offsetHeight,
-        };
-      }
-      setZoom(z);
-    },
-    [zoom, paged],
-  );
+      if (!el || !numPages || !viewport.w) return;
+      const focal = zoomFocal.current;
+      zoomFocal.current = null;
+      // clear any pinch preview transform now that real sizes are in the DOM
+      for (const p of pageRefs.current) if (p?.style.transform) p.style.transform = '';
+      if (trackRef.current?.style.transform) trackRef.current.style.transform = '';
 
-  // ---- scrubber micro-thumbnails: tiny renders that bypass the queue (they're <10 ms and the
-  // reader isn't scrolling while you drag). A newer request cancels the one in flight, and a
-  // small LRU makes dragging back and forth instant. Dropped on theme change and book close.
-  const thumbs = useRef(new Map<string, HTMLCanvasElement>());
-  const thumbJob = useRef<{ cancel: () => void } | null>(null);
-  useEffect(() => {
-    const cache = thumbs.current;
-    return () => {
-      thumbJob.current?.cancel();
-      for (const c of cache.values()) c.width = 0;
-      cache.clear();
-    };
-  }, [doc, theme]);
-  const renderThumbnail = useCallback(
-    async (n: number, widthPx: number): Promise<HTMLCanvasElement | null> => {
-      if (!doc || n < 1 || n > doc.numPages) return null;
-      const key = `${n}|${Math.round(widthPx)}`;
-      const cache = thumbs.current;
-      const hit = cache.get(key);
-      if (hit) {
-        cache.delete(key); // refresh LRU order
-        cache.set(key, hit);
-        return hit;
+      if (focal) {
+        const pageEl = pageRefs.current[focal.page - 1];
+        const container = paged ? slotRefs.current[focal.page - 1] : el;
+        if (pageEl && container) {
+          if (paged) el.scrollLeft = (focal.page - 1) * el.clientWidth;
+          container.scrollLeft = pageEl.offsetLeft + focal.fx * pageEl.offsetWidth - focal.mx;
+          container.scrollTop = pageEl.offsetTop + focal.fy * pageEl.offsetHeight - focal.my;
+          needsRestore.current = false;
+          locate();
+          return;
+        }
       }
-      thumbJob.current?.cancel();
-      let cancelled = false;
-      let task: { cancel(): void; promise: Promise<unknown> } | null = null;
-      thumbJob.current = {
-        cancel: () => {
-          cancelled = true;
-          task?.cancel();
-        },
+      if (!needsRestore.current) return;
+      needsRestore.current = false;
+      const { page: p, frac } = anchor.current;
+      if (paged) {
+        el.scrollLeft = (p - 1) * el.clientWidth;
+        const slot = slotRefs.current[p - 1];
+        if (slot) slot.scrollTop = frac * slot.scrollHeight;
+      } else {
+        const { tops, heights } = geoRef.current;
+        el.scrollTop = padTop() + tops[p - 1] + frac * heights[p - 1];
+      }
+      locate();
+    }, [viewport, zoom, sizes, paged, numPages, locate]);
+
+    // ---- fit text: centre the text column in each live page (margins sit off screen, clipped)
+    useLayoutEffect(() => {
+      const el = scrollerRef.current;
+      const tb = textBoxRef.current;
+      if (!el || !fitting || !tb) return;
+      const centre = (pageEl: HTMLElement | null | undefined, container: HTMLElement | null | undefined) => {
+        if (!pageEl || !container) return;
+        const left = Math.round(pageEl.offsetLeft + ((tb.x0 + tb.x1) / 2) * pageEl.offsetWidth - container.clientWidth / 2);
+        if (Math.abs(container.scrollLeft - left) > 1) container.scrollLeft = left;
       };
-      try {
+      if (paged) for (let n = range[0]; n <= range[1]; n++) centre(pageRefs.current[n - 1], slotRefs.current[n - 1]);
+      else centre(pageRefs.current[page - 1], el);
+    });
+
+    // ---- scroll handling. While the finger or momentum is moving we do *nothing* but note
+    // that we're scrolling: no React state, no DOM changes, no pdf.js work. iOS scrolls on its
+    // own thread, but it still needs the main thread free to paint newly exposed content.
+    // Position, page label and which pages are live all update once scrolling settles.
+    useEffect(() => {
+      const el = scrollerRef.current!;
+      let idle: number | undefined;
+      let frame = 0;
+      const settle = () => {
+        scheduler.scrolling = false;
+        locate();
+        flushSizes();
+        scheduler.pump();
+      };
+      // Scroll mode, once a frame at most: keep page boxes mounted under (and ahead of) the
+      // viewport. Reads scrollTop and the size table only; boxes show their cached preview.
+      let lastTop = el.scrollTop;
+      const track = () => {
+        frame = 0;
+        const n = geoRef.current.tops.length - 1;
+        if (paged || !n) return;
+        const top = el.scrollTop;
+        const dir = top >= lastTop ? 1 : -1;
+        lastTop = top;
+        const { tops } = geoRef.current;
+        const probe = top - padTop() + el.clientHeight * 0.5;
+        let a = 0;
+        let b = n - 1;
+        while (a < b) {
+          const m = (a + b + 1) >> 1;
+          if (tops[m] <= probe) a = m;
+          else b = m - 1;
+        }
+        const centre = Math.min(n, Math.max(1, a + 1 + dir * MOUNT_LEAD));
+        if (Math.abs(centre - mountAtRef.current) >= MOUNT_LEAD) {
+          mountAtRef.current = centre;
+          setMountAt(centre);
+        }
+      };
+      const onScroll = () => {
+        scheduler.scrolling = true;
+        window.clearTimeout(idle);
+        idle = window.setTimeout(settle, SCROLL_IDLE_MS);
+        if (!frame) frame = requestAnimationFrame(track);
+      };
+      el.addEventListener('scroll', onScroll, { passive: true });
+      // in Pages mode the live slots scroll vertically too (tall or zoomed pages)
+      el.addEventListener('scroll', onScroll, { passive: true, capture: true });
+      return () => {
+        el.removeEventListener('scroll', onScroll);
+        el.removeEventListener('scroll', onScroll, { capture: true });
+        window.clearTimeout(idle);
+        cancelAnimationFrame(frame);
+      };
+    }, [locate, scheduler, flushSizes, paged]);
+
+    // ---- probe real page sizes for current ± PROBE_WINDOW, nearest first, after the current
+    // page's canvas and text layer (it's an idle task). Replaces 1.1's loop over every page.
+    useEffect(() => {
+      if (!doc || !numPages) return;
+      let cancelled = false;
+      const pending = () => {
+        const out: number[] = [];
+        for (let d = 0; d <= PROBE_WINDOW; d++) {
+          for (const n of d ? [page + d, page - d] : [page]) {
+            if (n >= 1 && n <= numPages && !probed.current.has(n)) out.push(n);
+          }
+        }
+        return out;
+      };
+      const step = async () => {
+        for (const n of pending().slice(0, PROBE_BATCH)) {
+          if (cancelled) return;
+          const v = (await doc.getPage(n)).getViewport({ scale: 1 });
+          if (cancelled) return;
+          reportSize(n, v.width, v.height);
+        }
+        if (!cancelled && pending().length) scheduler.requestIdle('probe', 10, step);
+      };
+      if (pending().length) scheduler.requestIdle('probe', 10, step);
+      return () => {
+        cancelled = true;
+        scheduler.cancelIdle('probe');
+      };
+    }, [doc, numPages, page, reportSize, scheduler]);
+
+    // ---- report progress through the shell's single funnel
+    const firstReport = useRef(true);
+    useEffect(() => {
+      if (!numPages) return;
+      const fraction = numPages > 1 ? (page - 1) / (numPages - 1) : 1;
+      propsRef.current.onLocation({ fraction, page, pageCount: numPages, label: `Page ${page} of ${numPages}`, zoom });
+      propsRef.current.onProgressChange({
+        pdfPage: page,
+        pdfScale: autoFit ? 0 : zoom,
+        percentage: Math.round((page / numPages) * 1000) / 10,
+      });
+      if (firstReport.current) firstReport.current = false;
+      else propsRef.current.onPageTurn();
+    }, [page, zoom, autoFit, numPages]);
+
+    const goToPage = useCallback(
+      (n: number, smooth = false, frac = 0) => {
+        const el = scrollerRef.current;
+        if (!el || !numPages) return;
+        const target = Math.min(numPages, Math.max(1, Math.round(n)));
+        const behavior: ScrollBehavior =
+          smooth && !prefersReducedMotion() && Math.abs(target - pageRef.current) <= 2 ? 'smooth' : 'instant';
+        if (paged) el.scrollTo({ left: (target - 1) * el.clientWidth, behavior });
+        else
+          el.scrollTo({
+            top: padTop() + geoRef.current.tops[target - 1] + frac * geoRef.current.heights[target - 1] - PAD,
+            behavior,
+          });
+        if (behavior === 'instant') requestAnimationFrame(locate);
+      },
+      [numPages, paged, locate],
+    );
+
+    const next = useCallback(() => {
+      const el = scrollerRef.current;
+      if (!paged && el) el.scrollBy({ top: el.clientHeight * 0.85, behavior: prefersReducedMotion() ? 'instant' : 'smooth' });
+      else goToPage(pageRef.current + 1, true);
+    }, [goToPage, paged]);
+    const prev = useCallback(() => {
+      const el = scrollerRef.current;
+      if (!paged && el) el.scrollBy({ top: -el.clientHeight * 0.85, behavior: prefersReducedMotion() ? 'instant' : 'smooth' });
+      else goToPage(pageRef.current - 1, true);
+    }, [goToPage, paged]);
+
+    /** Change zoom keeping the point under (mx, my) — viewport coords — fixed on screen. */
+    const zoomAt = useCallback(
+      (nextZoom: number, mx?: number, my?: number) => {
+        const el = scrollerRef.current;
+        const z = clampZoom(nextZoom);
+        if (!el || (z === zoom && !autoFit)) return;
+        const p = pageRef.current;
+        const pageEl = pageRefs.current[p - 1];
+        const container = paged ? slotRefs.current[p - 1] : el;
+        if (pageEl && container) {
+          const rect = container.getBoundingClientRect();
+          const cx = (mx ?? rect.left + rect.width / 2) - rect.left;
+          const cy = (my ?? rect.top + rect.height / 2) - rect.top;
+          zoomFocal.current = {
+            page: p,
+            mx: cx,
+            my: cy,
+            fx: (container.scrollLeft + cx - pageEl.offsetLeft) / pageEl.offsetWidth,
+            fy: (container.scrollTop + cy - pageEl.offsetTop) / pageEl.offsetHeight,
+          };
+        }
+        setManualZoom(z);
+        setAutoFit(false);
+      },
+      [zoom, paged, autoFit],
+    );
+
+    // ---- scrubber micro-thumbnails: tiny renders that bypass the queue (they're <10 ms and the
+    // reader isn't scrolling while you drag). A newer request cancels the one in flight, and a
+    // small LRU makes dragging back and forth instant. Dropped on theme change and book close.
+    const thumbs = useRef(new Map<string, HTMLCanvasElement>());
+    const thumbJob = useRef<{ cancel: () => void } | null>(null);
+    useEffect(() => {
+      const cache = thumbs.current;
+      return () => {
+        thumbJob.current?.cancel();
+        for (const c of cache.values()) c.width = 0;
+        cache.clear();
+      };
+    }, [doc, theme]);
+    const renderThumbnail = useCallback(
+      async (n: number, widthPx: number): Promise<HTMLCanvasElement | null> => {
+        if (!doc || n < 1 || n > doc.numPages) return null;
+        const key = `${n}|${Math.round(widthPx)}`;
+        const cache = thumbs.current;
+        const hit = cache.get(key);
+        if (hit) {
+          cache.delete(key); // refresh LRU order
+          cache.set(key, hit);
+          return hit;
+        }
+        thumbJob.current?.cancel();
+        let cancelled = false;
+        let task: { cancel(): void; promise: Promise<unknown> } | null = null;
+        thumbJob.current = {
+          cancel: () => {
+            cancelled = true;
+            task?.cancel();
+          },
+        };
+        try {
+          const p = await doc.getPage(n);
+          if (cancelled) return null;
+          const vp = p.getViewport({ scale: widthPx / p.getViewport({ scale: 1 }).width });
+          let canvas = document.createElement('canvas');
+          canvas.width = Math.round(vp.width);
+          canvas.height = Math.round(vp.height);
+          task = p.render({ canvas, viewport: vp, background: '#ffffff' });
+          await task.promise;
+          if (cancelled) {
+            canvas.width = 0;
+            return null;
+          }
+          const imgs = isInverted(theme) ? toCanvasSpace(await pageImageMatrices(p, task), vp.transform) : [];
+          if (cancelled) {
+            canvas.width = 0;
+            return null;
+          }
+          canvas = tintCanvas(canvas, theme, imgs);
+          cache.set(key, canvas);
+          while (cache.size > THUMB_CACHE) {
+            const [oldKey, old] = cache.entries().next().value!;
+            cache.delete(oldKey);
+            old.width = 0;
+          }
+          return canvas;
+        } catch {
+          return null;
+        }
+      },
+      [doc, theme],
+    );
+
+    // ---- page previews (see lib/previews.ts). Every first-pass render leaves one behind for
+    // free; idle time prefetches the rest around the reader, leaning the way they're reading.
+    // (Not rendered on landing: a small render costs nearly as much as the first pass, which is
+    // mostly per-glyph work, so a landing goes straight to the visible pages' canvases.)
+    const previews = useRef(new PreviewCache(PREVIEW_CACHE));
+    const previewKey = useRef('');
+    const [, setPreviewTick] = useState(0);
+    const mountedRef = useRef<[number, number]>([1, 0]);
+    if (previewKey.current !== `${theme}`) {
+      previewKey.current = `${theme}`;
+      previews.current.clear();
+    }
+    useEffect(() => {
+      const cache = previews.current;
+      return () => cache.clear();
+    }, [doc]);
+    const storePreview = useCallback(async (n: number, source: HTMLCanvasElement, forTheme: ReaderTheme) => {
+      if (previews.current.has(n) || !source.width) return;
+      const url = await encodePreview(source, PREVIEW_W);
+      if (!url) return;
+      // dropped if the theme changed while encoding
+      if (forTheme !== propsRef.current.theme || previews.current.has(n)) return URL.revokeObjectURL(url);
+      previews.current.set(n, url);
+      const [mLo, mHi] = mountedRef.current;
+      if (n >= mLo && n <= mHi) setPreviewTick((t) => t + 1);
+    }, []);
+    /** A page's first pass doubles as its preview: downscaled and encoded later, in idle time. */
+    const onPainted = useCallback(
+      (n: number, canvas: () => HTMLCanvasElement | null, forTheme: ReaderTheme) => {
+        if (previews.current.has(n)) return;
+        scheduler.requestIdle(`enc${n}`, 11, async () => {
+          const c = canvas();
+          if (c && forTheme === propsRef.current.theme) await storePreview(n, c, forTheme);
+        });
+      },
+      [scheduler, storePreview],
+    );
+    const renderPreview = useCallback(
+      async (n: number) => {
+        if (!doc || previews.current.has(n)) return;
+        const forTheme = propsRef.current.theme;
         const p = await doc.getPage(n);
-        if (cancelled) return null;
-        const vp = p.getViewport({ scale: widthPx / p.getViewport({ scale: 1 }).width });
+        const unit = p.getViewport({ scale: 1 });
+        reportSize(n, unit.width, unit.height); // a free size probe
+        const vp = p.getViewport({ scale: PREVIEW_W / unit.width });
         let canvas = document.createElement('canvas');
         canvas.width = Math.round(vp.width);
         canvas.height = Math.round(vp.height);
-        task = p.render({ canvas, viewport: vp, background: '#ffffff' });
-        await task.promise;
-        if (cancelled) {
+        const task = p.render({ canvas, viewport: vp, background: '#ffffff' });
+        try {
+          await task.promise;
+        } catch {
           canvas.width = 0;
-          return null;
+          return;
         }
-        const imgs = isInverted(theme) ? toCanvasSpace(await pageImageMatrices(p, task), vp.transform) : [];
-        if (cancelled) {
-          canvas.width = 0;
-          return null;
-        }
-        canvas = tintCanvas(canvas, theme, imgs);
-        cache.set(key, canvas);
-        while (cache.size > THUMB_CACHE) {
-          const [oldKey, old] = cache.entries().next().value!;
-          cache.delete(oldKey);
-          old.width = 0;
-        }
-        return canvas;
-      } catch {
-        return null;
-      }
-    },
-    [doc, theme],
-  );
-
-  // ---- page previews (see lib/previews.ts). Every first-pass render leaves one behind for
-  // free; idle time prefetches the rest around the reader, leaning the way they're reading.
-  // (Not rendered on landing: a small render costs nearly as much as the first pass, which is
-  // mostly per-glyph work, so a landing goes straight to the visible pages' canvases.)
-  const previews = useRef(new PreviewCache(PREVIEW_CACHE));
-  const previewKey = useRef('');
-  const [, setPreviewTick] = useState(0);
-  const mountedRef = useRef<[number, number]>([1, 0]);
-  if (previewKey.current !== `${theme}`) {
-    previewKey.current = `${theme}`;
-    previews.current.clear();
-  }
-  useEffect(() => {
-    const cache = previews.current;
-    return () => cache.clear();
-  }, [doc]);
-  const storePreview = useCallback(async (n: number, source: HTMLCanvasElement, forTheme: ReaderTheme) => {
-    if (previews.current.has(n) || !source.width) return;
-    const url = await encodePreview(source, PREVIEW_W);
-    if (!url) return;
-    // dropped if the theme changed while encoding
-    if (forTheme !== propsRef.current.theme || previews.current.has(n)) return URL.revokeObjectURL(url);
-    previews.current.set(n, url);
-    const [mLo, mHi] = mountedRef.current;
-    if (n >= mLo && n <= mHi) setPreviewTick((t) => t + 1);
-  }, []);
-  /** A page's first pass doubles as its preview: downscaled and encoded later, in idle time. */
-  const onPainted = useCallback(
-    (n: number, canvas: () => HTMLCanvasElement | null, forTheme: ReaderTheme) => {
-      if (previews.current.has(n)) return;
-      scheduler.requestIdle(`enc${n}`, 11, async () => {
-        const c = canvas();
-        if (c && forTheme === propsRef.current.theme) await storePreview(n, c, forTheme);
-      });
-    },
-    [scheduler, storePreview],
-  );
-  const renderPreview = useCallback(
-    async (n: number) => {
-      if (!doc || previews.current.has(n)) return;
-      const forTheme = propsRef.current.theme;
-      const p = await doc.getPage(n);
-      const unit = p.getViewport({ scale: 1 });
-      reportSize(n, unit.width, unit.height); // a free size probe
-      const vp = p.getViewport({ scale: PREVIEW_W / unit.width });
-      let canvas = document.createElement('canvas');
-      canvas.width = Math.round(vp.width);
-      canvas.height = Math.round(vp.height);
-      const task = p.render({ canvas, viewport: vp, background: '#ffffff' });
-      try {
-        await task.promise;
-      } catch {
+        if (forTheme !== propsRef.current.theme) return void (canvas.width = 0);
+        const imgs = isInverted(forTheme) ? toCanvasSpace(await pageImageMatrices(p, task), vp.transform) : [];
+        canvas = tintCanvas(canvas, forTheme, imgs);
+        await storePreview(n, canvas, forTheme);
         canvas.width = 0;
-        return;
-      }
-      if (forTheme !== propsRef.current.theme) return void (canvas.width = 0);
-      const imgs = isInverted(forTheme) ? toCanvasSpace(await pageImageMatrices(p, task), vp.transform) : [];
-      canvas = tintCanvas(canvas, forTheme, imgs);
-      await storePreview(n, canvas, forTheme);
-      canvas.width = 0;
-    },
-    [doc, storePreview, reportSize],
-  );
-  useEffect(() => {
-    if (!doc || !numPages) return;
-    let cancelled = false;
-    const pending = () => {
-      const out: number[] = [];
-      const fwd = dirRef.current;
-      const ahead = PREVIEW_AHEAD;
-      const behind = PREVIEW_BEHIND;
-      // nearest first, roughly ahead:behind in proportion
-      for (let d = 0; d <= ahead; d++) {
-        for (const n of [page + fwd * d, ...(d <= behind && d ? [page - fwd * d] : [])]) {
-          if (n < 1 || n > numPages) continue;
-          if (previews.current.has(n)) previews.current.touch(n);
-          else out.push(n);
+      },
+      [doc, storePreview, reportSize],
+    );
+    useEffect(() => {
+      if (!doc || !numPages) return;
+      let cancelled = false;
+      const pending = () => {
+        const out: number[] = [];
+        const fwd = dirRef.current;
+        const ahead = PREVIEW_AHEAD;
+        const behind = PREVIEW_BEHIND;
+        // nearest first, roughly ahead:behind in proportion
+        for (let d = 0; d <= ahead; d++) {
+          for (const n of [page + fwd * d, ...(d <= behind && d ? [page - fwd * d] : [])]) {
+            if (n < 1 || n > numPages) continue;
+            if (previews.current.has(n)) previews.current.touch(n);
+            else out.push(n);
+          }
         }
-      }
-      return out;
-    };
-    const step = async () => {
-      for (const n of pending().slice(0, PREVIEW_BATCH)) {
-        if (cancelled) return;
-        await renderPreview(n);
-      }
-      if (!cancelled && pending().length) scheduler.requestIdle('preview', 12, step);
-    };
-    if (pending().length) scheduler.requestIdle('preview', 12, step);
-    return () => {
-      cancelled = true;
-      scheduler.cancelIdle('preview');
-    };
-  }, [doc, numPages, page, theme, renderPreview, scheduler]);
+        return out;
+      };
+      const step = async () => {
+        for (const n of pending().slice(0, PREVIEW_BATCH)) {
+          if (cancelled) return;
+          await renderPreview(n);
+        }
+        if (!cancelled && pending().length) scheduler.requestIdle('preview', 12, step);
+      };
+      if (pending().length) scheduler.requestIdle('preview', 12, step);
+      return () => {
+        cancelled = true;
+        scheduler.cancelIdle('preview');
+      };
+    }, [doc, numPages, page, theme, renderPreview, scheduler]);
 
-  // ---- page text for X-Ray and lookup context. Background requests go through the idle queue,
-  // lowest priority, so they run only after visible pages and size probes, and never mid-scroll.
-  const getPageText = useCallback(
-    (n: number, opts: { idle?: boolean } = {}): Promise<string> => {
-      if (!doc || n < 1 || n > doc.numPages) return Promise.reject(new Error('No such page'));
-      const read = async () =>
-        pageTextFromItems((await (await doc.getPage(n)).getTextContent()).items as Array<{ str?: string }>);
-      if (!opts.idle) return read();
-      return new Promise((resolve, reject) => {
-        scheduler.requestIdle(`text${n}`, 20, () => read().then(resolve, reject));
-      });
-    },
-    [doc, scheduler],
-  );
+    // ---- theme change: the visible pages are drawn in the new theme *before* it's applied, then
+    // swapped in during the same commit (see PdfPage), so the crossfade lands on finished pages
+    // instead of a light page repainting dark a beat later.
+    const prepared = useRef(new Map<number, { key: string; canvas: HTMLCanvasElement }>());
+    const prepareTheme = useCallback(
+      async (next: ReaderTheme, timeoutMs = 700) => {
+        const el = scrollerRef.current;
+        if (!doc || !el || !numPages) return;
+        for (const v of prepared.current.values()) v.canvas.width = 0;
+        prepared.current.clear();
+        const view = el.getBoundingClientRect();
+        const nums: number[] = [];
+        if (paged) nums.push(pageRef.current);
+        else
+          for (const [i, p] of pageRefs.current.entries()) {
+            const r = p?.isConnected ? p.getBoundingClientRect() : null;
+            if (r && r.bottom > view.top && r.top < view.bottom) nums.push(i + 1);
+          }
+        const work = Promise.all(
+          nums.slice(0, 3).map(async (n) => {
+            const i = n - 1;
+            const scale = scaleOf(i);
+            const ratio = firstPassRatio(sizes[i].w, sizes[i].h, scale);
+            const canvas = await drawPage(doc, n, scale, ratio, next).catch(() => null);
+            if (canvas) prepared.current.set(n, { key: canvasKey(scale, next), canvas });
+          }),
+        );
+        await Promise.race([work, new Promise((r) => setTimeout(r, timeoutMs))]);
+      },
+      [doc, numPages, paged, scaleOf, sizes],
+    );
 
-  useImperativeHandle(
-    ref,
-    () => ({
-      goToPage: (n, frac) => goToPage(n, false, frac),
-      getDocument: () => doc,
-      renderThumbnail,
-      getPageText,
-      next,
-      prev,
-      zoom: (dir) => zoomAt(dir === 0 ? 1 : dir > 0 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP),
-    }),
-    [goToPage, renderThumbnail, getPageText, doc, next, prev, zoom, zoomAt],
-  );
+    // ---- page text for X-Ray and lookup context. Background requests go through the idle queue,
+    // lowest priority, so they run only after visible pages and size probes, and never mid-scroll.
+    const getPageText = useCallback(
+      (n: number, opts: { idle?: boolean } = {}): Promise<string> => {
+        if (!doc || n < 1 || n > doc.numPages) return Promise.reject(new Error('No such page'));
+        const read = async () =>
+          pageTextFromItems((await (await doc.getPage(n)).getTextContent()).items as Array<{ str?: string }>);
+        if (!opts.idle) return read();
+        return new Promise((resolve, reject) => {
+          scheduler.requestIdle(`text${n}`, 20, () => read().then(resolve, reject));
+        });
+      },
+      [doc, scheduler],
+    );
 
-  // ---- keyboard
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement)?.closest?.('input, textarea')) return;
-      if (e.key === 'ArrowRight' || e.key === 'PageDown') next();
-      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prev();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [next, prev]);
+    useImperativeHandle(
+      ref,
+      () => ({
+        goToPage: (n, frac) => goToPage(n, false, frac),
+        getDocument: () => doc,
+        renderThumbnail,
+        getPageText,
+        next,
+        prev,
+        zoom: (dir) => (dir === 0 ? setAutoFit(true) : zoomAt(dir > 0 ? zoom * ZOOM_STEP : zoom / ZOOM_STEP)),
+        getOutline: async () => {
+          if (!doc) return [];
+          if (outline) return outline;
+          const o = await readOutline(doc);
+          setOutline(o);
+          return o;
+        },
+        prepareTheme,
+      }),
+      [goToPage, renderThumbnail, getPageText, doc, next, prev, zoom, zoomAt, outline, prepareTheme],
+    );
 
-  // ---- pinch to zoom: GPU transform preview while pinching, one crisp re-render at the end
-  const zoomRef = useRef(zoom);
-  zoomRef.current = zoom;
-  useEffect(() => {
-    const el = scrollerRef.current!;
-    let pinch: { dist: number; mx: number; my: number; target: HTMLElement } | null = null;
-    let scale = 1;
-    const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
-    const onStart = (e: TouchEvent) => {
-      if (e.touches.length !== 2) return;
-      const p = pageRef.current;
-      const pageEl = pageRefs.current[p - 1];
-      const target = paged ? pageEl : trackRef.current;
-      const container = paged ? slotRefs.current[p - 1] : el;
-      if (!target || !container || !pageEl) return;
-      const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-      const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-      const rect = container.getBoundingClientRect();
-      const ox = container.scrollLeft + mx - rect.left - (paged ? pageEl.offsetLeft : 0);
-      const oy = container.scrollTop + my - rect.top - (paged ? pageEl.offsetTop : 0);
-      target.style.transformOrigin = `${ox}px ${oy}px`;
-      target.style.willChange = 'transform';
-      pinch = { dist: dist(e.touches), mx, my, target };
-      scale = 1;
-    };
-    const onMove = (e: TouchEvent) => {
-      // No preventDefault: `touch-action: pan-x pan-y` already stops Safari's page zoom, and a
-      // non-passive touchmove would make every scroll gesture wait on the main thread.
-      if (!pinch || e.touches.length !== 2) return;
-      const z = zoomRef.current;
-      scale = Math.min(MAX_ZOOM / z, Math.max(MIN_ZOOM / z, dist(e.touches) / pinch.dist));
-      pinch.target.style.transform = `scale(${scale})`;
-    };
-    const onEnd = (e: TouchEvent) => {
-      if (!pinch || e.touches.length >= 2) return;
-      const { mx, my, target } = pinch;
-      pinch = null;
-      target.style.willChange = '';
-      if (Math.abs(scale - 1) < 0.03) target.style.transform = '';
-      else zoomAt(zoomRef.current * scale, mx, my); // transform is cleared in the layout effect
-    };
-    const stopGesture = (e: Event) => e.preventDefault();
-    el.addEventListener('touchstart', onStart, { passive: true });
-    el.addEventListener('touchmove', onMove, { passive: true });
-    el.addEventListener('touchend', onEnd, { passive: true });
-    el.addEventListener('touchcancel', onEnd, { passive: true });
-    el.addEventListener('gesturestart', stopGesture);
-    return () => {
-      el.removeEventListener('touchstart', onStart);
-      el.removeEventListener('touchmove', onMove);
-      el.removeEventListener('touchend', onEnd);
-      el.removeEventListener('touchcancel', onEnd);
-      el.removeEventListener('gesturestart', stopGesture);
-    };
-  }, [paged, zoomAt]);
+    // ---- keyboard
+    useEffect(() => {
+      const onKey = (e: KeyboardEvent) => {
+        if ((e.target as HTMLElement)?.closest?.('input, textarea')) return;
+        if (e.key === 'ArrowRight' || e.key === 'PageDown') next();
+        else if (e.key === 'ArrowLeft' || e.key === 'PageUp') prev();
+      };
+      window.addEventListener('keydown', onKey);
+      return () => window.removeEventListener('keydown', onKey);
+    }, [next, prev]);
 
-  // ---- taps: edges turn pages (Pages mode), centre toggles the chrome
-  const lastSelectionAt = useRef(0);
-  useEffect(() => {
-    const onSel = () => {
+    // ---- pinch to zoom: GPU transform preview while pinching, one crisp re-render at the end
+    const zoomRef = useRef(zoom);
+    zoomRef.current = zoom;
+    useEffect(() => {
+      const el = scrollerRef.current!;
+      let pinch: { dist: number; mx: number; my: number; target: HTMLElement } | null = null;
+      let scale = 1;
+      const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+      const onStart = (e: TouchEvent) => {
+        if (e.touches.length !== 2) return;
+        const p = pageRef.current;
+        const pageEl = pageRefs.current[p - 1];
+        const target = paged ? pageEl : trackRef.current;
+        const container = paged ? slotRefs.current[p - 1] : el;
+        if (!target || !container || !pageEl) return;
+        const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        const rect = container.getBoundingClientRect();
+        const ox = container.scrollLeft + mx - rect.left - (paged ? pageEl.offsetLeft : 0);
+        const oy = container.scrollTop + my - rect.top - (paged ? pageEl.offsetTop : 0);
+        target.style.transformOrigin = `${ox}px ${oy}px`;
+        target.style.willChange = 'transform';
+        pinch = { dist: dist(e.touches), mx, my, target };
+        scale = 1;
+      };
+      const onMove = (e: TouchEvent) => {
+        // No preventDefault: `touch-action: pan-x pan-y` already stops Safari's page zoom, and a
+        // non-passive touchmove would make every scroll gesture wait on the main thread.
+        if (!pinch || e.touches.length !== 2) return;
+        const z = zoomRef.current;
+        scale = Math.min(MAX_ZOOM / z, Math.max(MIN_ZOOM / z, dist(e.touches) / pinch.dist));
+        pinch.target.style.transform = `scale(${scale})`;
+      };
+      const onEnd = (e: TouchEvent) => {
+        if (!pinch || e.touches.length >= 2) return;
+        const { mx, my, target } = pinch;
+        pinch = null;
+        target.style.willChange = '';
+        if (Math.abs(scale - 1) < 0.03) target.style.transform = '';
+        else zoomAt(zoomRef.current * scale, mx, my); // transform is cleared in the layout effect
+      };
+      const stopGesture = (e: Event) => e.preventDefault();
+      el.addEventListener('touchstart', onStart, { passive: true });
+      el.addEventListener('touchmove', onMove, { passive: true });
+      el.addEventListener('touchend', onEnd, { passive: true });
+      el.addEventListener('touchcancel', onEnd, { passive: true });
+      el.addEventListener('gesturestart', stopGesture);
+      return () => {
+        el.removeEventListener('touchstart', onStart);
+        el.removeEventListener('touchmove', onMove);
+        el.removeEventListener('touchend', onEnd);
+        el.removeEventListener('touchcancel', onEnd);
+        el.removeEventListener('gesturestart', stopGesture);
+      };
+    }, [paged, zoomAt]);
+
+    // ---- taps: edges turn pages (Pages mode), centre toggles the chrome
+    const lastSelectionAt = useRef(0);
+    useEffect(() => {
+      const onSel = () => {
+        const s = document.getSelection();
+        if (s && !s.isCollapsed) lastSelectionAt.current = Date.now();
+      };
+      document.addEventListener('selectionchange', onSel);
+      return () => document.removeEventListener('selectionchange', onSel);
+    }, []);
+    const onClick = (e: React.MouseEvent) => {
       const s = document.getSelection();
-      if (s && !s.isCollapsed) lastSelectionAt.current = Date.now();
+      if ((s && !s.isCollapsed) || Date.now() - lastSelectionAt.current < 500) return;
+      const rect = scrollerRef.current!.getBoundingClientRect();
+      const zone = paged ? tapZone(e.clientX - rect.left, rect.width) : 'center';
+      if (zone === 'center') props.onCenterTap();
+      else if (zone === 'next') next();
+      else prev();
     };
-    document.addEventListener('selectionchange', onSel);
-    return () => document.removeEventListener('selectionchange', onSel);
-  }, []);
-  const onClick = (e: React.MouseEvent) => {
-    const s = document.getSelection();
-    if ((s && !s.isCollapsed) || Date.now() - lastSelectionAt.current < 500) return;
-    const rect = scrollerRef.current!.getBoundingClientRect();
-    const zone = paged ? tapZone(e.clientX - rect.left, rect.width) : 'center';
-    if (zone === 'center') props.onCenterTap();
-    else if (zone === 'next') next();
-    else prev();
-  };
 
-  // stable so memoized pages don't re-render on every parent render
-  const registerPage = useCallback((i: number, el: HTMLDivElement | null) => {
-    pageRefs.current[i] = el;
-  }, []);
-  const onTextInfo = useCallback((num: number, hasText: boolean) => {
-    setTextless((prev) => {
-      if (hasText === !prev.has(num)) return prev;
-      const s = new Set(prev);
-      if (hasText) s.delete(num);
-      else s.add(num);
-      return s;
-    });
-  }, []);
+    // stable so memoized pages don't re-render on every parent render
+    const registerPage = useCallback((i: number, el: HTMLDivElement | null) => {
+      pageRefs.current[i] = el;
+    }, []);
 
-  const [lo, hi] = range;
-  const isActive = (n: number) => n >= lo && n <= hi;
-  const ready = doc && numPages > 0 && viewport.w > 0;
+    const [lo, hi] = range;
+    const isActive = (n: number) => n >= lo && n <= hi;
+    const ready = doc && numPages > 0 && viewport.w > 0;
 
-  // Scroll mode mounts only the boxes around the current page (plus the live canvas range);
-  // spacers above and below stand in for the rest, so DOM size is flat however long the PDF is.
-  const mountLo = paged ? 1 : Math.max(1, Math.min(lo, mountAt - MOUNT_AROUND));
-  const mountHi = paged ? numPages : Math.min(numPages, Math.max(hi, mountAt + MOUNT_AROUND));
-  mountedRef.current = [mountLo, mountHi];
+    // Scroll mode mounts only the boxes around the current page (plus the live canvas range);
+    // spacers above and below stand in for the rest, so DOM size is flat however long the PDF is.
+    const mountLo = paged ? 1 : Math.max(1, Math.min(lo, mountAt - MOUNT_AROUND));
+    const mountHi = paged ? numPages : Math.min(numPages, Math.max(hi, mountAt + MOUNT_AROUND));
+    mountedRef.current = [mountLo, mountHi];
 
-  const renderPage = (i: number) => {
-    const n = i + 1;
-    const { w, h } = cssSize(i);
-    const node = (
-      <PdfPage
-        key={n}
-        index={i}
-        register={registerPage}
-        doc={doc!}
-        num={n}
-        baseW={sizes[i].w}
-        baseH={sizes[i].h}
-        width={w}
-        height={h}
-        scale={scaleOf(i)}
-        active={isActive(n)}
-        current={n === page}
-        theme={theme}
-        preview={previews.current.get(n)}
-        scheduler={scheduler}
-        onTextInfo={onTextInfo}
-        onRealSize={reportSize}
-        onPainted={onPainted}
-      />
-    );
-    if (!paged) return node;
-    return (
-      <div
-        key={n}
-        ref={(el) => {
-          slotRefs.current[i] = el;
-        }}
-        // only live slots are scroll containers: on iOS every overflow:auto element is its
-        // own native scroll view, and hundreds of them make the carousel stutter
-        className={isActive(n) ? 'pdf-slot is-live' : 'pdf-slot'}
-      >
-        <div className="pdf-slot-inner" style={{ width: Math.max(viewport.w, w + PAD * 2) }}>
-          {node}
+    const renderPage = (i: number) => {
+      const n = i + 1;
+      const { w, h } = cssSize(i);
+      const node = (
+        <PdfPage
+          key={n}
+          index={i}
+          register={registerPage}
+          doc={doc!}
+          num={n}
+          baseW={sizes[i].w}
+          baseH={sizes[i].h}
+          width={w}
+          height={h}
+          scale={scaleOf(i)}
+          active={isActive(n)}
+          current={n === page}
+          theme={theme}
+          preview={previews.current.get(n)}
+          scheduler={scheduler}
+          onRealSize={reportSize}
+          onPainted={onPainted}
+          prepared={prepared.current}
+        />
+      );
+      if (!paged) return node;
+      return (
+        <div
+          key={n}
+          ref={(el) => {
+            slotRefs.current[i] = el;
+          }}
+          // only live slots are scroll containers: on iOS every overflow:auto element is its
+          // own native scroll view, and hundreds of them make the carousel stutter
+          className={isActive(n) ? 'pdf-slot is-live' : 'pdf-slot'}
+        >
+          <div className="pdf-slot-inner" style={{ width: Math.max(viewport.w, w + PAD * 2) }}>
+            {node}
+          </div>
         </div>
-      </div>
-    );
-  };
+      );
+    };
 
-  const pageNodes: React.ReactNode[] = [];
-  if (ready) for (let i = mountLo - 1; i < mountHi; i++) pageNodes.push(renderPage(i));
+    const pageNodes: React.ReactNode[] = [];
+    if (ready) for (let i = mountLo - 1; i < mountHi; i++) pageNodes.push(renderPage(i));
 
-  // Spacers look like a column of blank pages, so a fast fling past the mounted boxes still
-  // shows pages (exact for uniform PDFs, close enough for mixed ones until it settles).
-  const spacer = (height: number) => {
-    if (!ready || height <= 0) return null;
-    const { w, h } = cssSize(0);
-    const bg = PAGE_BG[theme];
+    // Spacers look like a column of blank pages, so a fast fling past the mounted boxes still
+    // shows pages (exact for uniform PDFs, close enough for mixed ones until it settles).
+    const spacer = (height: number) => {
+      if (!ready || height <= 0) return null;
+      const { w, h } = cssSize(0);
+      const bg = PAGE_BG[theme];
+      return (
+        <div
+          aria-hidden
+          className="pdf-spacer"
+          style={{
+            height,
+            backgroundImage: `repeating-linear-gradient(to bottom, ${bg} 0, ${bg} ${h}px, transparent ${h}px, transparent ${h + GAP}px)`,
+            backgroundSize: `${w}px 100%`,
+          }}
+        />
+      );
+    };
+
     return (
       <div
-        aria-hidden
-        className="pdf-spacer"
-        style={{
-          height,
-          backgroundImage: `repeating-linear-gradient(to bottom, ${bg} 0, ${bg} ${h}px, transparent ${h}px, transparent ${h + GAP}px)`,
-          backgroundSize: `${w}px 100%`,
-        }}
-      />
-    );
-  };
-
-  return (
-    <div className={`relative h-full w-full pdf-theme-${theme}`} style={{ background: 'var(--reader-bg)' }}>
-      <div
-        ref={scrollerRef}
-        onClick={onClick}
-        className={paged ? 'pdf-scroller pdf-paged' : 'pdf-scroller pdf-scrolled'}
-        data-flow={flow}
+        className={`relative h-full w-full pdf-theme-${theme}${fitting ? ' fit-text' : ''}`}
+        style={{ background: 'var(--reader-bg)' }}
       >
-        {paged ? (
-          pageNodes
-        ) : (
-          <div ref={trackRef} className="pdf-track" style={{ width: Math.max(viewport.w, geo.maxW + PAD * 2) }}>
-            {ready && spacer(geo.tops[mountLo - 1])}
-            {pageNodes}
-            {ready && spacer(geo.tops[numPages] - geo.tops[mountHi])}
+        <div
+          ref={scrollerRef}
+          onClick={onClick}
+          className={paged ? 'pdf-scroller pdf-paged' : 'pdf-scroller pdf-scrolled'}
+          data-flow={flow}
+        >
+          {paged ? (
+            pageNodes
+          ) : (
+            <div ref={trackRef} className="pdf-track" style={{ width: Math.max(viewport.w, geo.maxW + PAD * 2) }}>
+              {ready && spacer(geo.tops[mountLo - 1])}
+              {pageNodes}
+              {ready && spacer(geo.tops[numPages] - geo.tops[mountHi])}
+            </div>
+          )}
+        </div>
+
+        {!doc && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <span className="h-6 w-6 animate-spin rounded-full border-2 border-accent border-t-transparent" />
           </div>
         )}
       </div>
-
-      {!doc && (
-        <div className="absolute inset-0 flex items-center justify-center">
-          <span className="h-6 w-6 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-        </div>
-      )}
-
-      {textless.has(page) && !bannerDismissed && (
-        <div
-          role="status"
-          className="absolute inset-x-3 z-[35] mx-auto flex max-w-md items-center gap-3 rounded-xl bg-fg/90 px-4 py-2.5 text-[13px] text-bg shadow-lg backdrop-blur"
-          style={{ top: 'calc(60px + env(safe-area-inset-top))' }}
-        >
-          <span className="flex-1">Scanned page detected—text selection isn't available on this page.</span>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              localFlag(scanKey)[1]();
-              setBannerDismissed(true);
-            }}
-            className="rounded-full p-1 opacity-80 hover:opacity-100"
-            aria-label="Dismiss"
-          >
-            <CloseIcon size={16} />
-          </button>
-        </div>
-      )}
-    </div>
-  );
-});
+    );
+  }),
+);
 
 export default PdfReader;
 
@@ -987,9 +1147,10 @@ interface PageProps {
   /** Blob URL of this page's preview, painted under the canvas (and instead of it while none). */
   preview: string | undefined;
   scheduler: RenderScheduler;
-  onTextInfo: (num: number, hasText: boolean) => void;
   onRealSize: (num: number, w: number, h: number) => void;
   onPainted: (num: number, canvas: () => HTMLCanvasElement | null, theme: ReaderTheme) => void;
+  /** Canvases already drawn for a theme that's about to apply (see prepareTheme). */
+  prepared: Map<number, { key: string; canvas: HTMLCanvasElement }>;
 }
 
 /**
@@ -1014,23 +1175,45 @@ const PdfPage = memo(function PdfPage({
   theme,
   preview,
   scheduler,
-  onTextInfo,
   onRealSize,
   onPainted,
+  prepared,
 }: PageProps) {
   const boxRef = useRef<HTMLDivElement | null>(null);
   const textRef = useRef<HTMLDivElement>(null);
   const rendered = useRef<{ key: string; sharp: boolean; canvas: HTMLCanvasElement } | null>(null);
   const textDone = useRef(false);
 
+  /** Puts a finished canvas in the box, freeing the one it replaces. */
+  const place = (box: HTMLDivElement, canvas: HTMLCanvasElement, key: string, sharp: boolean) => {
+    const old = rendered.current?.canvas;
+    box.prepend(canvas);
+    if (old) {
+      old.width = 0;
+      old.remove();
+    }
+    rendered.current = { key, sharp, canvas };
+  };
+
+  // theme change: take the canvas drawn ahead for this page, in the same commit as the theme
+  useLayoutEffect(() => {
+    const box = boxRef.current;
+    const hit = prepared.get(num);
+    if (!box || !active || !hit) return;
+    prepared.delete(num);
+    if (hit.key !== canvasKey(scale, theme)) return void (hit.canvas.width = 0);
+    place(box, hit.canvas, hit.key, false);
+    onPainted(num, () => rendered.current?.canvas ?? null, theme);
+  }, [theme, scale, active, num, prepared, onPainted]);
+
   // canvas: first pass (capped at 2x DPR / 2.2 MP) via the main queue; for the current page a
   // sharp pass (full DPR, up to 4.5 MP) as an idle task once the reader has settled on it.
   useEffect(() => {
     const box = boxRef.current;
     if (!box) return;
-    const canvasKey = `c${num}`;
+    const queueKey = `c${num}`;
     if (!active) {
-      scheduler.cancel(canvasKey);
+      scheduler.cancel(queueKey);
       scheduler.cancelIdle(`sharp${num}`);
       if (rendered.current) {
         // free the bitmap right away: iOS counts canvas memory until the element is collected
@@ -1042,13 +1225,13 @@ const PdfPage = memo(function PdfPage({
       return;
     }
     const dpr = window.devicePixelRatio || 1;
-    const key = `${scale.toFixed(4)}|${dpr}|${theme}`;
+    const key = canvasKey(scale, theme);
     const area = baseW * scale * baseH * scale;
-    const firstRatio = Math.min(dpr, FIRST_PASS_MAX_DPR, Math.sqrt(FIRST_PASS_PIXELS / area));
+    const firstRatio = firstPassRatio(baseW, baseH, scale);
     const sharpRatio = Math.min(dpr, Math.sqrt(SHARP_PASS_PIXELS / area));
     const needsSharp = sharpRatio > firstRatio * 1.05;
     let cancelled = false;
-    let renderTask: { cancel(): void; promise: Promise<unknown> } | null = null;
+    let renderTask: { cancel(): void } | null = null;
 
     const draw = async (sharp: boolean) => {
       if (cancelled) return;
@@ -1060,47 +1243,21 @@ const PdfPage = memo(function PdfPage({
         onRealSize(num, unit.width, unit.height);
         return;
       }
-      const viewport = p.getViewport({ scale });
-      const ratio = sharp ? sharpRatio : firstRatio;
-      let canvas = document.createElement('canvas');
-      canvas.width = Math.floor(viewport.width * ratio);
-      canvas.height = Math.floor(viewport.height * ratio);
-      renderTask = p.render({
-        canvas,
-        viewport,
-        transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : undefined,
-        background: '#ffffff',
-      });
-      try {
-        await renderTask.promise;
-      } catch {
-        canvas.width = 0;
-        return;
-      }
-      if (cancelled) {
-        canvas.width = 0;
-        return;
-      }
-      // dark/black: find the page's photos so they keep their colours (see tint.ts)
-      const imgs = isInverted(theme) ? toCanvasSpace(await pageImageMatrices(p, renderTask), viewport.transform, ratio) : [];
-      if (cancelled) {
-        canvas.width = 0;
-        return;
-      }
-      canvas = tintCanvas(canvas, theme, imgs);
-      canvas.className = 'pdf-canvas';
-      canvas.setAttribute('aria-hidden', 'true');
-      const old = rendered.current?.canvas;
-      box.prepend(canvas);
-      if (old) {
-        old.width = 0;
-        old.remove();
-      }
-      rendered.current = { key, sharp: sharp || !needsSharp, canvas };
+      const canvas = await drawPage(
+        doc,
+        num,
+        scale,
+        sharp ? sharpRatio : firstRatio,
+        theme,
+        (t) => (renderTask = t),
+        () => cancelled,
+      );
+      if (!canvas) return;
+      place(box, canvas, key, sharp || !needsSharp);
       if (!sharp) onPainted(num, () => rendered.current?.canvas ?? null, theme);
     };
 
-    if (rendered.current?.key !== key) scheduler.request(canvasKey, num, BIAS_CANVAS, () => draw(false));
+    if (rendered.current?.key !== key) scheduler.request(queueKey, num, BIAS_CANVAS, () => draw(false));
     if (current && needsSharp) {
       scheduler.requestIdle(`sharp${num}`, 0, async () => {
         if (rendered.current?.key === key && !rendered.current.sharp) await draw(true);
@@ -1108,7 +1265,7 @@ const PdfPage = memo(function PdfPage({
     }
     return () => {
       cancelled = true;
-      scheduler.cancel(canvasKey);
+      scheduler.cancel(queueKey);
       scheduler.cancelIdle(`sharp${num}`);
       renderTask?.cancel();
     };
@@ -1134,10 +1291,6 @@ const PdfPage = memo(function PdfPage({
       const p = await doc.getPage(num);
       const content = await p.getTextContent();
       if (cancelled) return;
-      onTextInfo(
-        num,
-        content.items.some((it) => 'str' in it && /\S/.test(it.str)),
-      );
       layer = new pdfjs.TextLayer({ textContentSource: content, container: tl, viewport: p.getViewport({ scale: 1 }) });
       await layer.render();
       if (cancelled) return;
@@ -1151,7 +1304,7 @@ const PdfPage = memo(function PdfPage({
       scheduler.cancel(key);
       layer?.cancel();
     };
-  }, [active, num, doc, onTextInfo, scheduler]);
+  }, [active, num, doc, scheduler]);
 
   return (
     <div

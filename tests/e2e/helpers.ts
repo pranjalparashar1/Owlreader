@@ -129,6 +129,16 @@ export async function showChrome(page: Page) {
     s.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }));
   });
   await expect(page.locator('footer[aria-hidden="false"]')).toHaveCount(1);
+  // the bars slide in (380ms): wait until they're in place before pressing anything on them
+  await page.waitForFunction(() =>
+    ['header', 'footer'].every(
+      (t) =>
+        !document
+          .querySelector(t)
+          ?.getAnimations()
+          .some((a) => a.playState === 'running'),
+    ),
+  );
 }
 
 export async function openSettings(page: Page) {
