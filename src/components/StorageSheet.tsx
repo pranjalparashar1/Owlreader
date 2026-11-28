@@ -17,7 +17,7 @@ interface Info {
   persisted?: boolean;
 }
 
-/** What OwlReader keeps on this device, and a way to drop saved lookups without touching books. */
+/** What Owl keeps on this device, and a way to drop saved lookups without touching books. */
 export default function StorageSheet({ onClose }: { onClose: () => void }) {
   const [info, setInfo] = useState<Info | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -79,13 +79,13 @@ export default function StorageSheet({ onClose }: { onClose: () => void }) {
         </div>
         <dl className="mt-2 divide-y divide-line" aria-busy={!info}>
           {row('Space used', info?.usage !== undefined ? formatBytes(info.usage) : info ? 'Not available' : '…')}
-          {info?.quota !== undefined && row('Available to OwlReader', formatBytes(info.quota))}
+          {info?.quota !== undefined && row('Available to Owl', formatBytes(info.quota))}
           {row('Books', info ? String(info.books) : '…')}
           {row('Saved lookups', info ? String(info.lookups) : '…')}
         </dl>
         {info?.persisted === false && (
           <p className="mt-2 text-[12px] leading-relaxed text-muted">
-            The browser may clear this data if your device runs low on space. Adding OwlReader to your Home Screen makes that less
+            The browser may clear this data if your device runs low on space. Adding Owl to your Home Screen makes that less
             likely.
           </p>
         )}

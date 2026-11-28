@@ -19,7 +19,7 @@ export default class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('OwlReader crashed', error, info.componentStack);
+    console.error('Owl crashed', error, info.componentStack);
   }
 
   render() {
@@ -29,9 +29,7 @@ export default class ErrorBoundary extends Component<Props, State> {
       if (this.props.onBack) this.props.onBack();
       else location.replace(location.pathname + location.search);
     };
-    return (
-      <ErrorScreen message="OwlReader hit an unexpected problem. Your books and reading positions are safe." onBack={back} />
-    );
+    return <ErrorScreen message="Owl hit an unexpected problem. Your books and reading positions are safe." onBack={back} />;
   }
 }
 

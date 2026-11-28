@@ -130,7 +130,7 @@ function ConfirmDelete({ book, onCancel, onConfirm }: { book: BookRecord; onCanc
         <p className="mt-1.5 text-[14px] text-muted">
           {isSupportedBook(book)
             ? `“${book.title}” and your reading position will be removed from this device.`
-            : `OwlReader now opens PDFs only, so “${book.title}” (saved by an earlier version) can't be opened.`}{' '}
+            : `Owl now opens PDFs only, so “${book.title}” (saved by an earlier version) can't be opened.`}{' '}
           {formatSize(book.fileSize || 0)} will be freed.
         </p>
         <div className="mt-5 flex gap-2">
@@ -205,7 +205,7 @@ export default function LibraryView({ onOpen }: Props) {
         <div className="px-safe mx-auto flex h-14 max-w-5xl items-center justify-between">
           <div className="flex items-center gap-2.5">
             <OwlMark size={28} />
-            <h1 className="font-serif text-[21px] font-semibold tracking-tight">OwlReader</h1>
+            <h1 className="font-serif text-[21px] font-semibold tracking-tight">Owl</h1>
           </div>
           <div className="flex items-center gap-1.5">
             <button

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { BookEntity, Orientation, PageEntity } from '../types';
-import { lookup, normalizeQuery, OfflineError, ServiceError, type LookupResponse } from '../services/wikipedia';
+import { lookup, normalizeQuery, OfflineError, rankCandidates, ServiceError, type LookupResponse } from '../services/wikipedia';
 import LookupCard from './LookupCard';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 import { BackIcon, CloseIcon, PlusIcon, SearchIcon, XrayIcon } from './icons';
@@ -16,7 +16,7 @@ interface Props {
   request: LookupRequest | null;
   orientation: Orientation;
   onClose: () => void;
-  /** The book's context hint ("Nvidia"): offered as a chip and used to boost searches. */
+  /** The book's context hint ("Nvidia"): offered as a chip (never added to searches automatically). */
   contextTag?: string;
   /** Capitalised terms near the selection on its page, offered as one-tap chips. */
   pageTerms?: string[];
@@ -63,6 +63,10 @@ export default function LookupDrawer({ request, orientation, onClose, contextTag
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const current = stack[stack.length - 1];
+  // What's around the word on the page, to put the right sense of "Epping" first: the X-Ray list
+  // it was opened from, else the names near the selection (these can arrive after the result).
+  const xrayTerms = stack[0]?.status === 'xray' ? stack[0].entities.map((e) => e.label) : [];
+  const contextTerms = xrayTerms.length > 0 ? xrayTerms : (pageTerms ?? []);
 
   // mount → next frame slide in; close → slide out → unmount
   useEffect(() => {
@@ -87,7 +91,9 @@ export default function LookupDrawer({ request, orientation, onClose, contextTag
     setStack((s) => (opts.push ? [...s, loading] : opts.retry || opts.refresh ? [...s.slice(0, -1), loading] : [loading]));
     let next: View;
     try {
-      const response = await lookup(query, { exactTitle: opts.exactTitle, refresh: opts.refresh, context: contextTag });
+      // no book context here: a title like "The Gathering Storm" poisons the search. The page's own
+      // terms rank the candidates instead (below), and the context stays a one-tap chip.
+      const response = await lookup(query, { exactTitle: opts.exactTitle, refresh: opts.refresh });
       next = { status: 'done', query, term, exactTitle: opts.exactTitle, response };
     } catch (e) {
       next = {
@@ -402,7 +408,7 @@ export default function LookupDrawer({ request, orientation, onClose, contextTag
           )}
           {current?.status === 'done' && (
             <LookupCard
-              result={current.response.result}
+              result={rankCandidates(current.response.result, contextTerms)}
               fromCache={current.response.fromCache}
               compact={!landscape || !!entity}
               contextTag={contextTag}

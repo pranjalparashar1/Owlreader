@@ -15,8 +15,8 @@ function meta(out: PDFDocument, c: Citation) {
   out.setTitle(`${c.title}, ${spanLabel(c.range)}`);
   if (c.author) out.setAuthor(c.author);
   out.setSubject(`Excerpt from ${c.title}`);
-  out.setCreator('OwlReader');
-  out.setProducer('OwlReader');
+  out.setCreator('Owl');
+  out.setProducer('Owl');
 }
 
 export async function exportCroppedPdf(data: ArrayBuffer, doc: PDFDocumentProxy, range: ClipRange, c: Citation) {

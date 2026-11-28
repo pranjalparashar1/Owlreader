@@ -20,7 +20,7 @@ const XRAY_STATES: Array<{ id: XrayState; label: string; help: string }> = [
 const LOOKUP_MODES: Array<{ id: LookupMode; label: string; help: string }> = [
   { id: 'wiki', label: 'Wiki', help: 'Select text, then tap Look up for Wikipedia, a photo and a map.' },
   { id: 'native', label: 'Safari', help: "Uses iPhone's built-in Look Up in the menu above your selection." },
-  { id: 'both', label: 'Both', help: "iPhone's Look Up menu above the words, and OwlReader's Wikipedia button below." },
+  { id: 'both', label: 'Both', help: "iPhone's Look Up menu above the words, and Owl's Wikipedia button below." },
 ];
 
 const THEMES: Array<{ id: ReaderTheme; label: string; swatch: string; ink: string }> = [
@@ -181,7 +181,8 @@ export default function ReaderSettings({
           className="h-10 w-full rounded-xl border border-line bg-bg px-3 text-[16px] outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
         />
         <p className="mt-1.5 text-[12px] text-muted">
-          Added to lookups that need it, and offered as a chip in the lookup drawer, so “Mercury” finds the right one.
+          Offered as a one-tap chip in the lookup drawer to narrow a search. Ambiguous words are matched to the names on the page
+          you're reading.
         </p>
 
         <Label>X-Ray</Label>
