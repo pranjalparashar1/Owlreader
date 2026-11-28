@@ -1,6 +1,7 @@
 /** Owl 1.x opens PDFs only. Records from older versions may carry another format. */
 export type BookFormat = 'pdf';
-export type ReaderTheme = 'light' | 'sepia' | 'dark';
+/** `black` is the AMOLED theme: pure #000 page and chrome. */
+export type ReaderTheme = 'light' | 'sepia' | 'dark' | 'black';
 export type Orientation = 'portrait' | 'landscape';
 
 export interface BookRecord {

@@ -150,11 +150,11 @@ export default function ExportSheet({ book, range, doc, theme, onClose }: Props)
           {format === 'image' && (
             <div className="mt-3 flex items-center gap-2">
               <div
-                className="grid flex-1 grid-cols-3 gap-1 rounded-xl bg-surface-2 p-1"
+                className="grid flex-1 grid-cols-4 gap-1 rounded-xl bg-surface-2 p-1"
                 role="radiogroup"
                 aria-label="Image theme"
               >
-                {(['light', 'sepia', 'dark'] as const).map((t) => (
+                {(['light', 'sepia', 'dark', 'black'] as const).map((t) => (
                   <button
                     key={t}
                     role="radio"

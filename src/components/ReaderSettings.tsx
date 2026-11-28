@@ -27,6 +27,7 @@ const THEMES: Array<{ id: ReaderTheme; label: string; swatch: string; ink: strin
   { id: 'light', label: 'Light', swatch: '#ffffff', ink: '#1c1917' },
   { id: 'sepia', label: 'Sepia', swatch: '#f4ecd8', ink: '#433422' },
   { id: 'dark', label: 'Dark', swatch: '#121212', ink: '#e7e5e4' },
+  { id: 'black', label: 'Black', swatch: '#000000', ink: '#d4d4d4' },
 ];
 
 interface Props {
@@ -106,7 +107,7 @@ export default function ReaderSettings({
         </button>
 
         <Label>Theme</Label>
-        <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label="Theme">
+        <div className="grid grid-cols-4 gap-2" role="radiogroup" aria-label="Theme">
           {THEMES.map((t) => (
             <button
               key={t.id}

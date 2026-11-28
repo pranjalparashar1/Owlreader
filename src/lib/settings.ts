@@ -20,6 +20,7 @@ export interface Settings {
 export type LookupMode = 'wiki' | 'native' | 'both';
 
 const KEY = 'owl.settings.v1';
+const THEME_COLOR: Record<ReaderTheme, string> = { light: '#faf7f2', sepia: '#efe5cf', dark: '#161514', black: '#000000' };
 const DEFAULTS: Settings = { theme: 'light', flow: 'paginated', lookupMode: 'wiki', xray: 'on' };
 
 function load(): Settings {
@@ -29,7 +30,7 @@ function load(): Settings {
       const saved = JSON.parse(raw);
       // keep only keys this version knows (drops 1.1's text-size setting and other leftovers)
       const out = { ...DEFAULTS };
-      if (saved.theme === 'light' || saved.theme === 'sepia' || saved.theme === 'dark') out.theme = saved.theme;
+      if (['light', 'sepia', 'dark', 'black'].includes(saved.theme)) out.theme = saved.theme;
       if (saved.flow === 'paginated' || saved.flow === 'scrolled') out.flow = saved.flow;
       if (saved.lookupMode === 'wiki' || saved.lookupMode === 'native' || saved.lookupMode === 'both')
         out.lookupMode = saved.lookupMode;
@@ -52,7 +53,7 @@ export function useSettings() {
     }
     document.documentElement.dataset.theme = settings.theme;
     const meta = document.querySelector('meta[name="theme-color"]');
-    meta?.setAttribute('content', settings.theme === 'dark' ? '#161514' : settings.theme === 'sepia' ? '#efe5cf' : '#faf7f2');
+    meta?.setAttribute('content', THEME_COLOR[settings.theme]);
   }, [settings]);
   const update = useCallback((patch: Partial<Settings>) => setSettings((s) => ({ ...s, ...patch })), []);
   return [settings, update] as const;
